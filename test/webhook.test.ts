@@ -1,18 +1,24 @@
 import { createExecutionContext, waitOnExecutionContext } from 'cloudflare:test'
 import { env } from 'cloudflare:workers'
-import { afterEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import app from '../src/index'
 import {
   callbackRequest,
   followEvent,
+  GROUP_CONVERSATION_KEY,
+  groupSource,
   stickerMessageEvent,
   TEST_CHANNEL_ACCESS_TOKEN,
   textMessageEvent,
+  USER_CONVERSATION_KEY,
 } from './fixtures/line'
+import { cleanupAgents, failingModel, stubModel, textModel } from './helpers/agent-stub'
 import { stubLineApi } from './helpers/fetch-stub'
 import { signedRequest } from './helpers/sign'
 
 const ENDPOINT = 'https://example.com/webhook'
+const REPLY_URL = 'https://api.line.me/v2/bot/message/reply'
+const LOADING_URL = 'https://api.line.me/v2/bot/chat/loading/start'
 
 // waitUntil に載せた返信の完了を待ってから返す。
 const post = async (init: RequestInit): Promise<Response> => {
@@ -22,8 +28,14 @@ const post = async (init: RequestInit): Promise<Response> => {
   return res
 }
 
-afterEach(() => {
+beforeEach(async () => {
+  await cleanupAgents()
+})
+
+afterEach(async () => {
+  await cleanupAgents()
   vi.unstubAllGlobals()
+  vi.restoreAllMocks()
 })
 
 describe('GET /health', () => {
@@ -86,41 +98,69 @@ describe('POST /webhook 署名検証', () => {
   })
 })
 
-describe('POST /webhook オウム返し', () => {
-  it('テキストメッセージに同じ本文で返信する', async () => {
+describe('POST /webhook LLM 返信', () => {
+  it('ローディングを出してから生成した返答を返信する', async () => {
+    await stubModel(USER_CONVERSATION_KEY, textModel('こんにちは、AI です'))
     const { calls } = stubLineApi()
-    const res = await post(await signedRequest(callbackRequest([textMessageEvent('こんにちは')])))
+
+    const res = await post(await signedRequest(callbackRequest([textMessageEvent('やあ')])))
 
     expect(res.status).toBe(200)
-    expect(calls).toHaveLength(1)
-    expect(calls[0].url).toBe('https://api.line.me/v2/bot/message/reply')
-    expect(calls[0].method).toBe('POST')
-    expect(calls[0].headers.get('authorization')).toBe(`Bearer ${TEST_CHANNEL_ACCESS_TOKEN}`)
-    expect(calls[0].body).toEqual({
+    expect(calls).toHaveLength(2)
+    // ローディング → 返信 の順であること。
+    expect(calls[0].url).toBe(LOADING_URL)
+    expect(calls[1].url).toBe(REPLY_URL)
+    expect(calls[1].headers.get('authorization')).toBe(`Bearer ${TEST_CHANNEL_ACCESS_TOKEN}`)
+    expect(calls[1].body).toEqual({
       replyToken: 'reply-token-1',
-      messages: [{ type: 'text', text: 'こんにちは' }],
+      messages: [{ type: 'text', text: 'こんにちは、AI です' }],
     })
   })
 
-  it('複数イベントはそれぞれ返信する', async () => {
+  it('グループではローディングを出さず返信だけする', async () => {
+    await stubModel(GROUP_CONVERSATION_KEY, textModel('グループの返事'))
     const { calls } = stubLineApi()
+
     const res = await post(
       await signedRequest(
-        callbackRequest([
-          textMessageEvent('ひとつめ', 'reply-token-1'),
-          textMessageEvent('ふたつめ', 'reply-token-2'),
-        ]),
+        callbackRequest([textMessageEvent('やあ', 'reply-token-1', groupSource())]),
       ),
     )
 
     expect(res.status).toBe(200)
-    expect(calls).toHaveLength(2)
-    expect(calls.map((c) => c.body)).toEqual(
-      expect.arrayContaining([
-        { replyToken: 'reply-token-1', messages: [{ type: 'text', text: 'ひとつめ' }] },
-        { replyToken: 'reply-token-2', messages: [{ type: 'text', text: 'ふたつめ' }] },
-      ]),
-    )
+    expect(calls).toHaveLength(1)
+    expect(calls[0].url).toBe(REPLY_URL)
+  })
+
+  it('ローディング API が失敗しても返信はする', async () => {
+    await stubModel(USER_CONVERSATION_KEY, textModel('返事'))
+    const { calls } = stubLineApi({ status: 500 })
+
+    const res = await post(await signedRequest(callbackRequest([textMessageEvent('やあ')])))
+
+    expect(res.status).toBe(200)
+    expect(calls.map((c) => c.url)).toEqual([LOADING_URL, REPLY_URL])
+  })
+
+  it('生成が失敗したらフォールバック文言で返信する', async () => {
+    await stubModel(USER_CONVERSATION_KEY, failingModel())
+    const { calls } = stubLineApi()
+
+    const res = await post(await signedRequest(callbackRequest([textMessageEvent('やあ')])))
+
+    expect(res.status).toBe(200)
+    const reply = calls.find((c) => c.url === REPLY_URL)
+    expect(JSON.stringify(reply?.body)).toContain('うまく返事ができませんでした')
+  })
+
+  it('モデルが空文字を返してもフォールバック文言で返信する', async () => {
+    await stubModel(USER_CONVERSATION_KEY, textModel(''))
+    const { calls } = stubLineApi()
+
+    await post(await signedRequest(callbackRequest([textMessageEvent('やあ')])))
+
+    const reply = calls.find((c) => c.url === REPLY_URL)
+    expect(JSON.stringify(reply?.body)).toContain('うまく返事ができませんでした')
   })
 
   it('テキスト以外のメッセージは無視して 200', async () => {
@@ -145,16 +185,26 @@ describe('POST /webhook オウム返し', () => {
     expect(calls).toHaveLength(0)
   })
 
-  it('LINE API が 500 を返しても webhook は 200', async () => {
-    const { calls } = stubLineApi({ status: 500 })
-    const res = await post(await signedRequest(callbackRequest([textMessageEvent('こんにちは')])))
+  it('source を持たないイベントは会話キーを作れないので何もせず 200', async () => {
+    const { calls } = stubLineApi()
+    const { source: _, ...withoutSource } = textMessageEvent('こんにちは')
+    const res = await post(await signedRequest(callbackRequest([withoutSource])))
     expect(res.status).toBe(200)
-    expect(calls).toHaveLength(1)
+    expect(calls).toHaveLength(0)
   })
 
-  it('LINE API への通信が失敗しても webhook は 200', async () => {
+  it('LINE への返信が 500 でも webhook は 200', async () => {
+    await stubModel(USER_CONVERSATION_KEY, textModel('返事'))
+    const { calls } = stubLineApi({ status: 500 })
+    const res = await post(await signedRequest(callbackRequest([textMessageEvent('やあ')])))
+    expect(res.status).toBe(200)
+    expect(calls).toHaveLength(2)
+  })
+
+  it('LINE への通信が失敗しても webhook は 200', async () => {
+    await stubModel(USER_CONVERSATION_KEY, textModel('返事'))
     stubLineApi({ reject: true })
-    const res = await post(await signedRequest(callbackRequest([textMessageEvent('こんにちは')])))
+    const res = await post(await signedRequest(callbackRequest([textMessageEvent('やあ')])))
     expect(res.status).toBe(200)
   })
 })
