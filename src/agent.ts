@@ -7,7 +7,7 @@ import {
   streamText,
 } from 'ai'
 import { createWorkersAI } from 'workers-ai-provider'
-import { systemPrompt } from './ai/prompt'
+import { currentTimeMessage, systemPrompt } from './ai/prompt'
 
 const MODEL_ID = '@cf/moonshotai/kimi-k2.6'
 // LINE のテキストメッセージ上限。
@@ -45,13 +45,17 @@ export class LineChatAgent extends AIChatAgent<CloudflareBindings> {
     _onFinish: unknown,
     options?: OnChatMessageOptions,
   ): Promise<Response | undefined> {
+    const history = pruneMessages({
+      messages: await convertToModelMessages(this.messages),
+      toolCalls: 'before-last-2-messages',
+    })
+
     const result = streamText({
       model: this.createModel(),
-      system: systemPrompt(new Date()),
-      messages: pruneMessages({
-        messages: await convertToModelMessages(this.messages),
-        toolCalls: 'before-last-2-messages',
-      }),
+      system: systemPrompt(),
+      // 現在時刻は履歴の後ろ（今回の発言の直前）に差し込む。システムプロンプト側に
+      // 置くと履歴より前で内容が毎分変わり、prefix cache が履歴を再利用できなくなる。
+      messages: [...history.slice(0, -1), currentTimeMessage(new Date()), ...history.slice(-1)],
       stopWhen: stepCountIs(5),
       abortSignal: options?.abortSignal,
       maxOutputTokens: 1024,
