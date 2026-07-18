@@ -26,7 +26,7 @@ describe('LineChatAgent#ask', () => {
 
     expect(model.doStreamCalls).toHaveLength(2)
     const { prompt } = model.doStreamCalls[1]
-    expect(prompt.map((m) => m.role)).toEqual(['system', 'user', 'assistant', 'system', 'user'])
+    expect(prompt.map((m) => m.role)).toEqual(['system', 'user', 'assistant', 'user'])
     expect(JSON.stringify(prompt)).toContain('ひとつめ')
     expect(JSON.stringify(prompt)).toContain('一回目')
   })
@@ -37,16 +37,10 @@ describe('LineChatAgent#ask', () => {
     expect(JSON.stringify(model.doStreamCalls[0].prompt[0])).toContain('日本語')
   })
 
-  it('現在時刻は履歴より後ろ・今回の発言の直前に入る', async () => {
-    const { target, model } = await stubModelWithCalls('user:U1', '一回目', '二回目')
-    await target.ask('ひとつめ')
-    await target.ask('ふたつめ')
-
-    // prefix cache が「固定プロンプト + 前回までの履歴」を再利用できる並びであること。
-    const { prompt } = model.doStreamCalls[1]
-    expect(prompt.map((m) => m.role)).toEqual(['system', 'user', 'assistant', 'system', 'user'])
-    expect(JSON.stringify(prompt[3])).toContain('現在の日時')
-    expect(JSON.stringify(prompt[4])).toContain('ふたつめ')
+  it('現在時刻はシステムプロンプトに入る', async () => {
+    const { target, model } = await stubModelWithCalls('user:U1', 'はい')
+    await target.ask('やあ')
+    expect(JSON.stringify(model.doStreamCalls[0].prompt[0])).toContain('現在の日時')
   })
 
   it('長い日本語の返答が文字化けしない', async () => {
