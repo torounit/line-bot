@@ -80,22 +80,6 @@ export class LineChatAgent extends AIChatAgent<CloudflareBindings> {
     return result.toUIMessageStreamResponse()
   }
 
-  /** webhook からの入口。ユーザー発言を履歴に足し、1 ターン走らせて返答を返す。 */
-  async ask(text: string): Promise<string> {
-    // 関数形の saveMessages はターンロックの内側で走るため、同一会話に複数イベントが
-    // 並行して届いても最新の履歴を見る。
-    const result = await this.saveMessages((messages) => [
-      ...messages,
-      { id: crypto.randomUUID(), role: 'user' as const, parts: [{ type: 'text' as const, text }] },
-    ])
-
-    if (result.status !== 'completed') {
-      throw new Error(result.error ?? `chat turn ${result.status}`)
-    }
-
-    return assistantText(this.messages).trim().slice(0, MAX_TEXT_LENGTH)
-  }
-
   /**
    * webhook からの入口。生成を待たずにスケジュールして即座に返る。
    * Worker の waitUntil はレスポンス送信後 30 秒で打ち切られるが、生成には
