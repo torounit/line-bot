@@ -13,6 +13,7 @@
     "test:watch": "vitest"
   },
   "dependencies": {
+    "@line/bot-sdk": "^11.2.0",
     "hono": "^4.12.30"
   },
   "devDependencies": {
