@@ -2,10 +2,13 @@
   "$schema": "node_modules/wrangler/config-schema.json",
   "name": "line-bot",
   "main": "src/index.ts",
-  "compatibility_date": "2026-07-17"
-  // "compatibility_flags": [
-  //   "nodejs_compat"
-  // ],
+  "compatibility_date": "2026-07-17",
+  // @line/bot-sdk が node:crypto / node:stream / node:buffer を使うため必要。
+  "compatibility_flags": ["nodejs_compat"],
+  "observability": {
+    "enabled": true,
+    "head_sampling_rate": 1
+  }
   // "vars": {
   //   "MY_VAR": "my-variable"
   // },
@@ -30,9 +33,5 @@
   // ],
   // "ai": {
   //   "binding": "AI"
-  // },
-  // "observability": {
-  //   "enabled": true,
-  //   "head_sampling_rate": 1
   // }
 }
