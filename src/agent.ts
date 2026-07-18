@@ -53,6 +53,13 @@ export class LineChatAgent extends AIChatAgent<CloudflareBindings> {
       gateway: { id: AI_GATEWAY_ID },
     })(MODEL_ID, {
       sessionAffinity: this.sessionAffinity,
+      // thinking を止める。有効なままだと maxOutputTokens を思考だけで使い切り、
+      // 本文が 1 文字も出ないまま打ち切られる（AI Gateway のログで、応答が
+      // reasoning_content のみで tokens_out が上限 1024 に張り付くのを確認）。
+      // K2.6 の指定キーは thinking で、provider の型はまだ enable_thinking のまま
+      // 追随していない。chat_template_kwargs は binding.run() の inputs へそのまま
+      // 転送されるため、型だけ広げて実際のキーを渡す。
+      chat_template_kwargs: { thinking: false } as { enable_thinking?: boolean },
     })
   }
 
