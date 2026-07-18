@@ -12,6 +12,8 @@ import { currentTimeMessage, systemPrompt } from './ai/prompt'
 const MODEL_ID = '@cf/moonshotai/kimi-k2.6'
 // LINE のテキストメッセージ上限。
 const MAX_TEXT_LENGTH = 5000
+// "default" は最初の認証済みリクエストで自動的に作られる。
+const AI_GATEWAY_ID = 'default'
 
 /** assistant メッセージの text パートを連結する（SDK の private な同等処理を再実装）。 */
 const assistantText = (messages: { role: string; parts: { type: string }[] }[]): string => {
@@ -35,7 +37,14 @@ export class LineChatAgent extends AIChatAgent<CloudflareBindings> {
    * スタブできない。テストは runInDurableObject でこのメソッドを差し替える。
    */
   protected createModel(): LanguageModel {
-    return createWorkersAI({ binding: this.env.AI })(MODEL_ID, {
+    // AI Gateway を通す目的は観測。1 回ごとのレイテンシ・トークン数・finish reason が
+    // ログに残り、Worker 側のログでは見えないモデル呼び出しの中身を追える。
+    // キャッシュは有効にしない。キーがリクエストボディ全体の完全一致で、会話履歴を
+    // 含む以上ほぼ当たらないため。
+    return createWorkersAI({
+      binding: this.env.AI,
+      gateway: { id: AI_GATEWAY_ID },
+    })(MODEL_ID, {
       sessionAffinity: this.sessionAffinity,
     })
   }
