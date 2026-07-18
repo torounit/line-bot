@@ -41,7 +41,13 @@ async function handleEvent(
   if (chatId !== null) await showLoading(client, chatId)
 
   const chatAgent = await getAgentByName(env.LineChatAgent, key)
-  await chatAgent.startTurn({ text: event.message.text, replyToken: event.replyToken })
+  await chatAgent.startTurn({
+    text: event.message.text,
+    replyToken: event.replyToken,
+    // Workers は I/O が起きるまで時刻を更新しない。リクエストを受けた直後の
+    // ここは時計が新しいが、alarm で起きた直後の DO は古いままなので渡す。
+    now: Date.now(),
+  })
   trace('turn.scheduled', { key, elapsedMs: Date.now() - startedAt })
 }
 

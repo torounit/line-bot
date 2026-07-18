@@ -29,7 +29,18 @@ const GENERATION_TIMEOUT_MS = 45_000
 const FALLBACK_TEXT = 'ごめんなさい、いまうまく返事ができませんでした。もう一度話しかけてください。'
 
 /** 1 ターン分の依頼。schedule の payload として JSON で保存される。 */
-export type TurnRequest = { text: string; replyToken: string }
+export type TurnRequest = {
+  text: string
+  replyToken: string
+  /**
+   * webhook を受けた時点の時刻（epoch ms）。
+   * Workers のランタイムは Spectre 対策で I/O が起きるまで時刻を更新しない。
+   * alarm で起きた直後の DO には外向きの I/O がまだ無く、new Date() が
+   * 前回のターンで最後に I/O した時刻——最後に成功した生成の時刻——を返し続ける。
+   * リクエストを受け取った直後で時計が新しい Worker 側から渡す。
+   */
+  now: number
+}
 
 /** assistant メッセージの text パートを連結する（SDK の private な同等処理を再実装）。 */
 const assistantText = (messages: { role: string; parts: { type: string }[] }[]): string => {
@@ -46,6 +57,13 @@ export class LineChatAgent extends AIChatAgent<CloudflareBindings> {
   // 復帰先のクライアントが居ない。DO が落ちた後にアラームでターンを再開しても
   // LINE の reply token は失効していて誰にも届かないため、無効にする。
   chatRecovery = false
+
+  /**
+   * 進行中のターンで使う「現在時刻」。webhook を受けた Worker から渡される。
+   * saveMessages から onChatMessage までは同期的に 1 ターンずつ進む
+   * （_runExclusiveChatTurn が直列化する）ので、インスタンスに置いて受け渡す。
+   */
+  #now: number | undefined
 
   /**
    * 使うモデルを 1 メソッドに閉じ込めた差し替え可能な継ぎ目。
@@ -80,7 +98,8 @@ export class LineChatAgent extends AIChatAgent<CloudflareBindings> {
   ): Promise<Response | undefined> {
     const result = streamText({
       model: this.createModel(),
-      system: systemPrompt(new Date()),
+      // ここで new Date() を呼ぶと、alarm 起動直後は前回のターンの時刻が返る。
+      system: systemPrompt(new Date(this.#now ?? Date.now())),
       messages: pruneMessages({
         messages: await convertToModelMessages(this.messages),
         toolCalls: 'before-last-2-messages',
@@ -115,12 +134,13 @@ export class LineChatAgent extends AIChatAgent<CloudflareBindings> {
    */
   async runTurn(request: TurnRequest): Promise<void> {
     const startedAt = Date.now()
+    this.#now = request.now
     const reply = await this.#generate(request.text).catch((e: unknown) => {
       console.error('generate failed', e)
       return ''
     })
     const askMs = Date.now() - startedAt
-    trace('ask.done', { askMs, replyLength: reply.length })
+    trace('ask.done', { askMs, replyLength: reply.length, promptTime: request.now })
 
     // 空文字は LINE が受け付けないので、生成失敗と同じくフォールバック文言に倒す。
     const text = reply.length > 0 ? reply : FALLBACK_TEXT

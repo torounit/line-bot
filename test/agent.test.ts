@@ -27,7 +27,7 @@ const conversation = (agent: DurableObjectStub<LineChatAgent>, calls: CapturedRe
   // calls は複数の会話で共有されることがあるので、作成時点の件数を起点にする。
   let replies = replyTexts(calls).length
   return async (text: string): Promise<string> => {
-    await agent.startTurn({ text, replyToken: `tok-${replies}` })
+    await agent.startTurn({ text, replyToken: `tok-${replies}`, now: Date.now() })
     await runDurableObjectAlarm(agent)
     replies += 1
     await vi.waitFor(() => expect(replyTexts(calls)).toHaveLength(replies))
@@ -46,7 +46,7 @@ describe('LineChatAgent#startTurn', () => {
     const agent = await stubModel('user:U1', textModel('返事'))
     const { calls } = stubLineApi()
 
-    await agent.startTurn({ text: 'やあ', replyToken: 'tok' })
+    await agent.startTurn({ text: 'やあ', replyToken: 'tok', now: Date.now() })
 
     expect(calls).toHaveLength(0)
   })
@@ -146,6 +146,24 @@ describe('LineChatAgent の会話履歴', () => {
     const system = JSON.stringify(model.doStreamCalls[0].prompt[0])
     expect(system).toContain('日本語')
     expect(system).toContain('現在の日時')
+  })
+
+  // DO 内の new Date() は alarm 起動直後だと前回のターンの時刻を返すため、
+  // Worker から渡された時刻がそのままプロンプトに載ることを確かめる。
+  it('システムプロンプトの日時は startTurn で渡された時刻を使う', async () => {
+    const { target, model } = await stubModelWithCalls('user:U1', 'はい')
+    const { calls } = stubLineApi()
+
+    // 2026-07-18T15:00:00Z は JST では翌日 2026 年 7 月 19 日 0 時。
+    await target.startTurn({
+      text: 'やあ',
+      replyToken: 'tok',
+      now: Date.parse('2026-07-18T15:00:00Z'),
+    })
+    await runDurableObjectAlarm(target)
+    await vi.waitFor(() => expect(replyTexts(calls)).toHaveLength(1))
+
+    expect(JSON.stringify(model.doStreamCalls[0].prompt[0])).toContain('2026年7月19日')
   })
 
   it('空の返答は次のターンの文脈にテキストを持ち込まない', async () => {
