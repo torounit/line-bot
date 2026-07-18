@@ -5,9 +5,44 @@
   "compatibility_date": "2026-07-17",
   // @line/bot-sdk が node:crypto / node:stream / node:buffer を使うため必要。
   "compatibility_flags": ["nodejs_compat"],
+  "ai": {
+    "binding": "AI"
+  },
+  // Agents SDK は Durable Object 必須。this.sql を使うため new_sqlite_classes で登録する。
+  "durable_objects": {
+    "bindings": [
+      {
+        "name": "LineChatAgent",
+        "class_name": "LineChatAgent"
+      }
+    ]
+  },
+  "migrations": [
+    {
+      "tag": "v1",
+      "new_sqlite_classes": ["LineChatAgent"]
+    }
+  ],
   "observability": {
     "enabled": true,
     "head_sampling_rate": 1
+  },
+  // テスト専用の環境。ai バインディングを意図的に持たせない。
+  // テストは createModel() をスタブするので env.AI を一度も使わないが、
+  // バインディングが存在するだけで miniflare がリモート接続を張るため、
+  // 認証情報の無い CI では起動に失敗する。
+  // バインディングは環境間で継承されないので、必要なものだけここに書く。
+  "env": {
+    "test": {
+      "durable_objects": {
+        "bindings": [
+          {
+            "name": "LineChatAgent",
+            "class_name": "LineChatAgent"
+          }
+        ]
+      }
+    }
   }
   // "vars": {
   //   "MY_VAR": "my-variable"

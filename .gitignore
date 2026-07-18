@@ -31,3 +31,6 @@ lerna-debug.log*
 
 # misc
 .DS_Store
+
+# Claude Code のローカル設定
+.claude/settings.local.json

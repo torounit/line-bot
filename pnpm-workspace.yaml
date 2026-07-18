@@ -1,4 +1,6 @@
 allowBuilds:
+  # postinstall は寄付の案内を出すだけなのでビルド不要。
+  core-js-pure: false
   esbuild: true
   sharp: true
   workerd: true
