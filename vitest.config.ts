@@ -14,7 +14,7 @@ export default defineConfig({
   },
   plugins: [
     cloudflareTest({
-      wrangler: { configPath: './wrangler.jsonc' },
+      wrangler: { configPath: './wrangler.jsonc', environment: 'test' },
       // 実際のシークレットは使わず、テスト専用のダミー値を注入する。
       miniflare: {
         bindings: {
