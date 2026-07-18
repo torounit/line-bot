@@ -125,6 +125,18 @@ describe('LineChatAgent の会話履歴', () => {
     expect(JSON.stringify(prompt)).toContain('一回目')
   })
 
+  // reply token は 1 分で切れるので、それを超える生成は打ち切ってフォールバックに倒す。
+  it('モデル呼び出しに中断シグナルを渡す', async () => {
+    const { target, model } = await stubModelWithCalls('user:U1', 'はい')
+    const { calls } = stubLineApi()
+
+    await conversation(target, calls)('やあ')
+
+    // DO の外からシグナルの状態は読めない（クロス DO の I/O 制限）ので、
+    // 渡っていることだけを見る。合成そのものは test/abort.test.ts で検証している。
+    expect(model.doStreamCalls[0].abortSignal).toBeDefined()
+  })
+
   it('システムプロンプトを毎回渡し、現在時刻を含める', async () => {
     const { target, model } = await stubModelWithCalls('user:U1', 'はい')
     const { calls } = stubLineApi()

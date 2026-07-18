@@ -7,6 +7,7 @@ import {
   streamText,
 } from 'ai'
 import { createWorkersAI } from 'workers-ai-provider'
+import { abortAfter } from './abort'
 import { systemPrompt } from './ai/prompt'
 import { createMessagingClient, replyText } from './line/client'
 import { trace } from './trace'
@@ -17,6 +18,13 @@ const MODEL_ID = '@cf/google/gemma-4-26b-a4b-it'
 const MAX_TEXT_LENGTH = 5000
 // "default" は最初の認証済みリクエストで自動的に作られる。
 const AI_GATEWAY_ID = 'default'
+/**
+ * 生成を打ち切るまでの時間。reply token の有効期限が 1 分なので、
+ * これを超えた返答はもう届けられない。打ち切ってフォールバック文言を返す方がよい。
+ * 実測では thinking を止めた状態で 2〜4 秒なので、通常は掛からない。
+ * 過去に thinking が暴走して 300 秒走り続けた記録がある（DO の alarm は 15 分動ける）。
+ */
+const GENERATION_TIMEOUT_MS = 45_000
 // 生成に失敗したときの返答。無言だとユーザーには不具合と区別がつかない。
 const FALLBACK_TEXT = 'ごめんなさい、いまうまく返事ができませんでした。もう一度話しかけてください。'
 
@@ -78,7 +86,7 @@ export class LineChatAgent extends AIChatAgent<CloudflareBindings> {
         toolCalls: 'before-last-2-messages',
       }),
       stopWhen: stepCountIs(5),
-      abortSignal: options?.abortSignal,
+      abortSignal: abortAfter(GENERATION_TIMEOUT_MS, options?.abortSignal),
       maxOutputTokens: 1024,
       maxRetries: 1,
     })
