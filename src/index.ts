@@ -1,4 +1,8 @@
 import { Hono } from 'hono'
+
+// Durable Object クラスは Worker のエントリからも named export する必要がある。
+export { LineChatAgent } from './agent'
+
 import { createMessagingClient, replyText } from './line/client'
 import { isReplyableTextMessage } from './line/types'
 import { verifyLineRequest } from './line/verify'
