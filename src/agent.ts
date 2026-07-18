@@ -9,7 +9,8 @@ import {
 import { createWorkersAI } from 'workers-ai-provider'
 import { currentTimeMessage, systemPrompt } from './ai/prompt'
 
-const MODEL_ID = '@cf/moonshotai/kimi-k2.6'
+// MoE で総 26B・活性 4B。生成が waitUntil の猶予に間に合うよう速さを優先する。
+const MODEL_ID = '@cf/google/gemma-4-26b-a4b-it'
 // LINE のテキストメッセージ上限。
 const MAX_TEXT_LENGTH = 5000
 
