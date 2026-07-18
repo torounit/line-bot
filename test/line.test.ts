@@ -25,14 +25,10 @@ describe('isReplyableTextMessage', () => {
 })
 
 describe('replyText', () => {
-  const fakeClient = (
-    impl: () => Promise<unknown>,
-  ): LineReplier & { replyMessage: ReturnType<typeof vi.fn> } => ({
-    replyMessage: vi.fn(impl),
-  })
+  const fakeClient = (impl: LineReplier['replyMessage']) => ({ replyMessage: vi.fn(impl) })
 
   it('同じ本文で返信し true を返す', async () => {
-    const client = fakeClient(async () => ({}))
+    const client = fakeClient(async () => ({ sentMessages: [] }))
     expect(await replyText(client, 'tok', 'やあ')).toBe(true)
     expect(client.replyMessage).toHaveBeenCalledWith({
       replyToken: 'tok',
@@ -48,9 +44,12 @@ describe('replyText', () => {
   })
 
   it('5000 文字を超えるテキストは切り詰める', async () => {
-    const client = fakeClient(async () => ({}))
+    const client = fakeClient(async () => ({ sentMessages: [] }))
     await replyText(client, 'tok', 'あ'.repeat(6000))
-    expect(client.replyMessage.mock.calls[0][0].messages[0].text).toHaveLength(5000)
+    expect(client.replyMessage).toHaveBeenCalledWith({
+      replyToken: 'tok',
+      messages: [{ type: 'text', text: 'あ'.repeat(5000) }],
+    })
   })
 })
 

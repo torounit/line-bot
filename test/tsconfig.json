@@ -4,5 +4,8 @@
     "moduleResolution": "bundler",
     "types": ["@cloudflare/vitest-pool-workers/types"]
   },
+  // 親の exclude（["test"]）はそのままだと継承され、ルート基準で解決されて
+  // このディレクトリ全体を除外してしまうため打ち消す。
+  "exclude": [],
   "include": ["./**/*.ts", "../worker-configuration.d.ts"]
 }

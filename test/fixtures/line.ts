@@ -31,6 +31,7 @@ export const stickerMessageEvent = (replyToken = 'reply-token-1') => ({
     stickerId: '1',
     stickerResourceType: 'STATIC' as const,
     keywords: [],
+    quoteToken: 'q2',
   },
 })
 
