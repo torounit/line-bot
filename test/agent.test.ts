@@ -1,3 +1,4 @@
+import { runDurableObjectAlarm } from 'cloudflare:test'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import {
   cleanupAgents,
@@ -6,9 +7,11 @@ import {
   stubModelWithCalls,
   textModel,
 } from './helpers/agent-stub'
+import { stubLineApi } from './helpers/fetch-stub'
 
 afterEach(async () => {
   await cleanupAgents()
+  vi.unstubAllGlobals()
   vi.restoreAllMocks()
 })
 
@@ -94,5 +97,70 @@ describe('LineChatAgent#ask', () => {
     await group.ask('グループの発言')
 
     expect(JSON.stringify(groupModel.doStreamCalls[0].prompt)).not.toContain('個人の発言')
+  })
+})
+
+describe('LineChatAgent#startTurn', () => {
+  const REPLY_URL = 'https://api.line.me/v2/bot/message/reply'
+  const replyBodies = (calls: { url: string; body: unknown }[]) =>
+    calls.filter((c) => c.url === REPLY_URL).map((c) => JSON.stringify(c.body))
+
+  it('生成を待たずに返り、その時点では返信していない', async () => {
+    const agent = await stubModel('user:U1', textModel('返事'))
+    const { calls } = stubLineApi()
+
+    await agent.startTurn({ text: 'やあ', replyToken: 'tok' })
+
+    expect(calls).toHaveLength(0)
+  })
+
+  it('アラームの発火で生成した返答を返信する', async () => {
+    const agent = await stubModel('user:U1', textModel('こんにちは、AI です'))
+    const { calls } = stubLineApi()
+    await agent.startTurn({ text: 'やあ', replyToken: 'tok' })
+
+    await runDurableObjectAlarm(agent)
+
+    // schedule(0) はほぼ即時なので miniflare が自発的に発火する場合もある。
+    // 発火経路を問わず結果だけを見る。
+    await vi.waitFor(() => expect(replyBodies(calls)).toHaveLength(1))
+    expect(replyBodies(calls)[0]).toContain('こんにちは、AI です')
+    expect(replyBodies(calls)[0]).toContain('tok')
+  })
+
+  it('生成が失敗してもフォールバック文言で返信する', async () => {
+    const agent = await stubModel('user:U1', failingModel())
+    const { calls } = stubLineApi()
+    await agent.startTurn({ text: 'やあ', replyToken: 'tok' })
+
+    await runDurableObjectAlarm(agent)
+
+    await vi.waitFor(() => expect(replyBodies(calls)).toHaveLength(1))
+    expect(replyBodies(calls)[0]).toContain('うまく返事ができませんでした')
+  })
+
+  it('モデルが空文字を返してもフォールバック文言で返信する', async () => {
+    const agent = await stubModel('user:U1', textModel(''))
+    const { calls } = stubLineApi()
+    await agent.startTurn({ text: 'やあ', replyToken: 'tok' })
+
+    await runDurableObjectAlarm(agent)
+
+    await vi.waitFor(() => expect(replyBodies(calls)).toHaveLength(1))
+    expect(replyBodies(calls)[0]).toContain('うまく返事ができませんでした')
+  })
+
+  // schedule のリトライ既定は 3 回で、そのままだと LINE へ重複送信される。
+  it('生成が失敗しても返信は 1 回だけ', async () => {
+    const agent = await stubModel('user:U1', failingModel())
+    const { calls } = stubLineApi()
+    await agent.startTurn({ text: 'やあ', replyToken: 'tok' })
+
+    await runDurableObjectAlarm(agent)
+    await vi.waitFor(() => expect(replyBodies(calls)).toHaveLength(1))
+
+    // 追加のアラームを走らせても再送されないこと。
+    await runDurableObjectAlarm(agent)
+    expect(replyBodies(calls)).toHaveLength(1)
   })
 })
