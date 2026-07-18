@@ -117,6 +117,29 @@ describe('POST /webhook LLM 返信', () => {
     })
   })
 
+  it('各段階の所要時間と再送フラグを記録する', async () => {
+    await stubModel(USER_CONVERSATION_KEY, textModel('返事'))
+    stubLineApi()
+    const logs: string[] = []
+    vi.spyOn(console, 'log').mockImplementation((...args: unknown[]) => {
+      logs.push(String(args[0]))
+    })
+
+    await post(await signedRequest(callbackRequest([textMessageEvent('やあ')])))
+
+    const traced = logs.map((l) => JSON.parse(l) as Record<string, unknown>)
+    expect(traced.map((t) => t.stage)).toEqual([
+      'webhook.received',
+      'handle.start',
+      'ask.done',
+      'reply.sent',
+    ])
+    expect(traced[0]).toMatchObject({ events: 1, targets: 1, redeliveries: 0 })
+    expect(traced[1]).toMatchObject({ key: USER_CONVERSATION_KEY, isRedelivery: false })
+    expect(traced[2]).toMatchObject({ replyLength: 2 })
+    expect(typeof traced[3].totalMs).toBe('number')
+  })
+
   it('グループではローディングを出さず返信だけする', async () => {
     await stubModel(GROUP_CONVERSATION_KEY, textModel('グループの返事'))
     const { calls } = stubLineApi()
