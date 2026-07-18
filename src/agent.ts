@@ -12,9 +12,8 @@ import { currentTimeMessage, systemPrompt } from './ai/prompt'
 const MODEL_ID = '@cf/moonshotai/kimi-k2.6'
 // LINE のテキストメッセージ上限。
 const MAX_TEXT_LENGTH = 5000
-// 他の Worker のログと混ざらないよう専用のゲートウェイを使う。
-// "default" と違い自動生成されないので、事前に作成しておく必要がある。
-const AI_GATEWAY_ID = 'line-bot'
+// "default" は最初の認証済みリクエストで自動的に作られる。
+const AI_GATEWAY_ID = 'default'
 
 /** assistant メッセージの text パートを連結する（SDK の private な同等処理を再実装）。 */
 const assistantText = (messages: { role: string; parts: { type: string }[] }[]): string => {
