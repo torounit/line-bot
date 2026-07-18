@@ -1,4 +1,5 @@
-import { createExecutionContext, env, waitOnExecutionContext } from 'cloudflare:test'
+import { createExecutionContext, waitOnExecutionContext } from 'cloudflare:test'
+import { env } from 'cloudflare:workers'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import app from '../src/index'
 import {

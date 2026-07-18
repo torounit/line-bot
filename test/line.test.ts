@@ -1,4 +1,4 @@
-import { env } from 'cloudflare:test'
+import { env } from 'cloudflare:workers'
 import type { webhook } from '@line/bot-sdk'
 import { describe, expect, it, vi } from 'vitest'
 import { createMessagingClient, type LineReplier, replyText } from '../src/line/client'
