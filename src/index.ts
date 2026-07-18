@@ -1,7 +1,7 @@
 import type { messagingApi } from '@line/bot-sdk'
 import { getAgentByName } from 'agents'
 import { Hono } from 'hono'
-import { createMessagingClient, replyText } from './line/client'
+import { createMessagingClient } from './line/client'
 import { showLoading } from './line/loading'
 import {
   conversationKey,
@@ -10,22 +10,15 @@ import {
   type ReplyableTextMessageEvent,
 } from './line/types'
 import { verifyLineRequest } from './line/verify'
+import { trace } from './trace'
 
 // Durable Object クラスは Worker のエントリからも named export する必要がある。
 export { LineChatAgent } from './agent'
 
-// 生成に失敗したときの返答。無言だとユーザーには不具合と区別がつかない。
-const FALLBACK_TEXT = 'ごめんなさい、いまうまく返事ができませんでした。もう一度話しかけてください。'
-
 /**
- * 各段階の所要時間を記録する。返信が waitUntil の打ち切りで届かない事象を
- * 追うための計測で、どこまで進んだかが分かるよう段階ごとに出す。
- * 発言内容そのものは記録しない（長さだけ）。
+ * 生成と返信は DO 側の alarm で行うので、ここではローディング表示と依頼だけを行う。
+ * Worker の waitUntil はレスポンス送信後 30 秒で打ち切られ、生成には収まらない。
  */
-const trace = (stage: string, fields: Record<string, unknown>): void => {
-  console.log(JSON.stringify({ stage, ...fields }))
-}
-
 async function handleEvent(
   env: CloudflareBindings,
   client: messagingApi.MessagingApiClient,
@@ -43,23 +36,13 @@ async function handleEvent(
     textLength: event.message.text.length,
   })
 
-  // 1 対 1 チャットでのみローディングを出せる。生成の数秒に対して十分速いので待つ。
+  // 1 対 1 チャットでのみローディングを出せる。実測 54ms で速いので待つ。
   const chatId = loadingChatId(event.source)
   if (chatId !== null) await showLoading(client, chatId)
-  const loadingMs = Date.now() - startedAt
 
-  const askStartedAt = Date.now()
   const chatAgent = await getAgentByName(env.LineChatAgent, key)
-  const reply = await chatAgent.ask(event.message.text).catch((e: unknown) => {
-    console.error('generate failed', e)
-    return FALLBACK_TEXT
-  })
-  const askMs = Date.now() - askStartedAt
-  trace('ask.done', { key, loadingMs, askMs, replyLength: reply.length })
-
-  // 空文字は LINE が受け付けないので、フォールバック文言に倒す。
-  await replyText(client, event.replyToken, reply.length > 0 ? reply : FALLBACK_TEXT)
-  trace('reply.sent', { key, askMs, totalMs: Date.now() - startedAt })
+  await chatAgent.startTurn({ text: event.message.text, replyToken: event.replyToken })
+  trace('turn.scheduled', { key, elapsedMs: Date.now() - startedAt })
 }
 
 const app = new Hono<{ Bindings: CloudflareBindings }>()
