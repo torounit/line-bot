@@ -11,7 +11,8 @@ import { systemPrompt } from './ai/prompt'
 import { createMessagingClient, replyText } from './line/client'
 import { trace } from './trace'
 
-const MODEL_ID = '@cf/moonshotai/kimi-k2.6'
+// MoE で総 26B・活性 4B。thinking を止めた状態なら kimi より大幅に速い想定。
+const MODEL_ID = '@cf/google/gemma-4-26b-a4b-it'
 // LINE のテキストメッセージ上限。
 const MAX_TEXT_LENGTH = 5000
 // "default" は最初の認証済みリクエストで自動的に作られる。
@@ -56,9 +57,11 @@ export class LineChatAgent extends AIChatAgent<CloudflareBindings> {
       // thinking を止める。有効なままだと maxOutputTokens を思考だけで使い切り、
       // 本文が 1 文字も出ないまま打ち切られる（AI Gateway のログで、応答が
       // reasoning_content のみで tokens_out が上限 1024 に張り付くのを確認）。
-      // K2.6 の指定キーは thinking で、provider の型はまだ enable_thinking のまま
-      // 追随していない。chat_template_kwargs は binding.run() の inputs へそのまま
-      // 転送されるため、型だけ広げて実際のキーを渡す。
+      // 指定キーは K2.6 のドキュメントにある thinking。provider の型はまだ
+      // enable_thinking のまま追随していない。chat_template_kwargs は
+      // binding.run() の inputs へそのまま転送されるため、型だけ広げて実際のキーを渡す。
+      // gemma でも同じキーで効くかは未確認。効かなければ応答が reasoning_content
+      // だけになるので、AI Gateway のログで判別できる。
       chat_template_kwargs: { thinking: false } as { enable_thinking?: boolean },
     })
   }
