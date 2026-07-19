@@ -1,4 +1,6 @@
+import { runDurableObjectAlarm } from 'cloudflare:test'
 import { afterEach, describe, expect, it, vi } from 'vitest'
+import type { LineChatAgent } from '../src/agent'
 import {
   cleanupAgents,
   failingModel,
@@ -6,23 +8,115 @@ import {
   stubModelWithCalls,
   textModel,
 } from './helpers/agent-stub'
+import { type CapturedRequest, stubLineApi } from './helpers/fetch-stub'
+
+const REPLY_URL = 'https://api.line.me/v2/bot/message/reply'
+
+const replyTexts = (calls: CapturedRequest[]): string[] =>
+  calls
+    .filter((c) => c.url === REPLY_URL)
+    .map((c) => (c.body as { messages: { text: string }[] }).messages[0].text)
+
+/**
+ * 1 ターンを走らせて返信本文を返す。
+ * 生成と返信は alarm の中で行われるので、依頼 → 発火 → 返信の到着まで待つ。
+ * schedule(0) はほぼ即時なので miniflare が自発的に発火する場合もあり、
+ * 発火経路は問わず返信が増えたことだけを見る。
+ */
+const conversation = (agent: DurableObjectStub<LineChatAgent>, calls: CapturedRequest[]) => {
+  // calls は複数の会話で共有されることがあるので、作成時点の件数を起点にする。
+  let replies = replyTexts(calls).length
+  return async (text: string): Promise<string> => {
+    await agent.startTurn({ text, replyToken: `tok-${replies}`, now: Date.now() })
+    await runDurableObjectAlarm(agent)
+    replies += 1
+    await vi.waitFor(() => expect(replyTexts(calls)).toHaveLength(replies))
+    return replyTexts(calls)[replies - 1]
+  }
+}
 
 afterEach(async () => {
   await cleanupAgents()
+  vi.unstubAllGlobals()
   vi.restoreAllMocks()
 })
 
-describe('LineChatAgent#ask', () => {
-  it('生成された返答を返す', async () => {
-    const agent = await stubModel('user:U1', textModel('こんにちは、AI です'))
-    expect(await agent.ask('やあ')).toBe('こんにちは、AI です')
+describe('LineChatAgent#startTurn', () => {
+  it('生成を待たずに返り、その時点では返信していない', async () => {
+    const agent = await stubModel('user:U1', textModel('返事'))
+    const { calls } = stubLineApi()
+
+    await agent.startTurn({ text: 'やあ', replyToken: 'tok', now: Date.now() })
+
+    expect(calls).toHaveLength(0)
   })
 
+  it('アラームの発火で生成した返答を返信する', async () => {
+    const agent = await stubModel('user:U1', textModel('こんにちは、AI です'))
+    const { calls } = stubLineApi()
+
+    expect(await conversation(agent, calls)('やあ')).toBe('こんにちは、AI です')
+  })
+
+  it('生成が失敗してもフォールバック文言で返信する', async () => {
+    const agent = await stubModel('user:U1', failingModel())
+    const { calls } = stubLineApi()
+
+    expect(await conversation(agent, calls)('やあ')).toContain('うまく返事ができませんでした')
+  })
+
+  // LINE は空のテキストメッセージを受け付けない。
+  it('モデルが空文字を返してもフォールバック文言で返信する', async () => {
+    const agent = await stubModel('user:U1', textModel(''))
+    const { calls } = stubLineApi()
+
+    expect(await conversation(agent, calls)('やあ')).toContain('うまく返事ができませんでした')
+  })
+
+  // schedule のリトライ既定は 3 回で、そのままだと LINE へ重複送信される。
+  it('生成が失敗しても返信は 1 回だけ', async () => {
+    const agent = await stubModel('user:U1', failingModel())
+    const { calls } = stubLineApi()
+    await conversation(agent, calls)('やあ')
+
+    // 追加のアラームを走らせても再送されないこと。
+    await runDurableObjectAlarm(agent)
+    expect(replyTexts(calls)).toHaveLength(1)
+  })
+
+  it('返答の前後の空白を落とす', async () => {
+    const agent = await stubModel('user:U1', textModel('\n  はい  \n'))
+    const { calls } = stubLineApi()
+
+    expect(await conversation(agent, calls)('やあ')).toBe('はい')
+  })
+
+  it('5000 文字を超える返答は切り詰める', async () => {
+    const agent = await stubModel('user:U1', textModel('あ'.repeat(6000)))
+    const { calls } = stubLineApi()
+
+    expect(await conversation(agent, calls)('やあ')).toHaveLength(5000)
+  })
+
+  it('長い日本語の返答が文字化けしない', async () => {
+    // 平文 Response 経路はチャンク境界でマルチバイト文字を壊すため、その回帰テスト。
+    const agent = await stubModel('user:U1', textModel('あ'.repeat(3000)))
+    const { calls } = stubLineApi()
+
+    const reply = await conversation(agent, calls)('やあ')
+    expect(reply).toBe('あ'.repeat(3000))
+    expect(reply).not.toContain('�')
+  })
+})
+
+describe('LineChatAgent の会話履歴', () => {
   it('2 ターン目のモデル呼び出しに 1 ターン目の履歴が渡る', async () => {
     const { target, model } = await stubModelWithCalls('user:U1', '一回目', '二回目')
+    const { calls } = stubLineApi()
+    const say = conversation(target, calls)
 
-    await target.ask('ひとつめ')
-    await target.ask('ふたつめ')
+    await say('ひとつめ')
+    await say('ふたつめ')
 
     expect(model.doStreamCalls).toHaveLength(2)
     const { prompt } = model.doStreamCalls[1]
@@ -31,67 +125,70 @@ describe('LineChatAgent#ask', () => {
     expect(JSON.stringify(prompt)).toContain('一回目')
   })
 
-  it('システムプロンプトを毎回渡す', async () => {
+  // reply token は 1 分で切れるので、それを超える生成は打ち切ってフォールバックに倒す。
+  it('モデル呼び出しに中断シグナルを渡す', async () => {
     const { target, model } = await stubModelWithCalls('user:U1', 'はい')
-    await target.ask('やあ')
-    expect(JSON.stringify(model.doStreamCalls[0].prompt[0])).toContain('日本語')
+    const { calls } = stubLineApi()
+
+    await conversation(target, calls)('やあ')
+
+    // DO の外からシグナルの状態は読めない（クロス DO の I/O 制限）ので、
+    // 渡っていることだけを見る。合成そのものは test/abort.test.ts で検証している。
+    expect(model.doStreamCalls[0].abortSignal).toBeDefined()
   })
 
-  it('現在時刻はシステムプロンプトに入る', async () => {
+  it('システムプロンプトを毎回渡し、現在時刻を含める', async () => {
     const { target, model } = await stubModelWithCalls('user:U1', 'はい')
-    await target.ask('やあ')
-    expect(JSON.stringify(model.doStreamCalls[0].prompt[0])).toContain('現在の日時')
+    const { calls } = stubLineApi()
+
+    await conversation(target, calls)('やあ')
+
+    const system = JSON.stringify(model.doStreamCalls[0].prompt[0])
+    expect(system).toContain('日本語')
+    expect(system).toContain('現在の日時')
   })
 
-  it('長い日本語の返答が文字化けしない', async () => {
-    // 平文 Response 経路はチャンク境界でマルチバイト文字を壊すため、その回帰テスト。
-    const agent = await stubModel('user:U1', textModel('あ'.repeat(3000)))
-    const reply = await agent.ask('やあ')
-    expect(reply).toBe('あ'.repeat(3000))
-    expect(reply).not.toContain('�')
-  })
+  // DO 内の new Date() は alarm 起動直後だと前回のターンの時刻を返すため、
+  // Worker から渡された時刻がそのままプロンプトに載ることを確かめる。
+  it('システムプロンプトの日時は startTurn で渡された時刻を使う', async () => {
+    const { target, model } = await stubModelWithCalls('user:U1', 'はい')
+    const { calls } = stubLineApi()
 
-  it('返答の前後の空白を落とす', async () => {
-    const agent = await stubModel('user:U1', textModel('\n  はい  \n'))
-    expect(await agent.ask('やあ')).toBe('はい')
-  })
+    // 2026-07-18T15:00:00Z は JST では翌日 2026 年 7 月 19 日 0 時。
+    await target.startTurn({
+      text: 'やあ',
+      replyToken: 'tok',
+      now: Date.parse('2026-07-18T15:00:00Z'),
+    })
+    await runDurableObjectAlarm(target)
+    await vi.waitFor(() => expect(replyTexts(calls)).toHaveLength(1))
 
-  it('5000 文字を超える返答は切り詰める', async () => {
-    const agent = await stubModel('user:U1', textModel('あ'.repeat(6000)))
-    expect(await agent.ask('やあ')).toHaveLength(5000)
-  })
-
-  // 空文字のときは呼び出し側がフォールバック文言に倒す。LINE は空のテキストを受け付けない。
-  it('モデルが空文字を返したら空文字を返す', async () => {
-    const agent = await stubModel('user:U1', textModel(''))
-    expect(await agent.ask('やあ')).toBe('')
+    expect(JSON.stringify(model.doStreamCalls[0].prompt[0])).toContain('2026年7月19日')
   })
 
   it('空の返答は次のターンの文脈にテキストを持ち込まない', async () => {
-    const agent = await stubModel('user:U1', textModel(''))
-    await agent.ask('やあ')
+    const empty = await stubModel('user:U1', textModel(''))
+    const { calls } = stubLineApi()
+    await conversation(empty, calls)('やあ')
 
     // 空の assistant メッセージ自体は履歴に残るが、中身が空であることを確認する。
     const { target, model } = await stubModelWithCalls('user:U1', 'ふつうの返事')
-    await target.ask('もう一度')
+    await conversation(target, calls)('もう一度')
+
     const assistants = model.doStreamCalls[0].prompt.filter((m) => m.role === 'assistant')
     expect(assistants.every((m) => m.content.length === 0)).toBe(true)
   })
 
-  it('モデルの呼び出しが失敗したら例外を投げる', async () => {
-    const agent = await stubModel('user:U1', failingModel())
-    await expect(agent.ask('やあ')).rejects.toThrow()
-  })
-
   it('会話キーが違えば履歴は混ざらない', async () => {
+    const { calls } = stubLineApi()
     const { target: user } = await stubModelWithCalls('user:U1', '個人の返事')
-    await user.ask('個人の発言')
+    await conversation(user, calls)('個人の発言')
 
     const { target: group, model: groupModel } = await stubModelWithCalls(
       'group:G1',
       'グループの返事',
     )
-    await group.ask('グループの発言')
+    await conversation(group, calls)('グループの発言')
 
     expect(JSON.stringify(groupModel.doStreamCalls[0].prompt)).not.toContain('個人の発言')
   })
