@@ -1,3 +1,5 @@
+import { trace } from '../trace'
+
 // 自前ホストの SearXNG。Cloudflare Access で保護されているので Service Token で通す。
 export type SearxngConfig = {
   baseUrl: string
@@ -35,14 +37,24 @@ export async function searxngSearch(
     },
   }).catch(() => null)
 
-  if (!res?.ok) return '検索に失敗しました。'
+  if (!res?.ok) {
+    trace('search', { status: res?.status ?? 0, ok: false, query })
+    return '検索に失敗しました。'
+  }
 
   const body = (await res.json().catch(() => null)) as SearxngResponse | null
   const results = body?.results ?? []
+  // モデルが投げたクエリと件数を残す。「見つからない」と答えたとき、
+  // 検索が空だったのかモデルが結果を読めていないのかを切り分けるため。
+  trace('search', { status: res.status, ok: true, query, count: results.length })
   if (results.length === 0) return '検索結果は見つかりませんでした。'
 
-  return results
+  const formatted = results
     .slice(0, RESULT_COUNT)
     .map((r, i) => `${i + 1}. ${r.title ?? ''}\n${r.content ?? ''}\n${r.url ?? ''}`)
     .join('\n\n')
+
+  // 素の一覧だけ返すとモデルが「参考情報」と受け取り、答えが書いてあっても
+  // 「見つからなかった」と結論することがあるので、使い方を明示する。
+  return `以下は web 検索の結果です。この内容を根拠に、質問へ具体的に答えてください。\n\n${formatted}`
 }
