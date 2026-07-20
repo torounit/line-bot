@@ -15,8 +15,10 @@ import { createMessagingClient, replyText } from './line/client'
 import { searxngSearch } from './tools/web-search'
 import { trace } from './trace'
 
-// MoE で総 26B・活性 4B。thinking を止めた状態なら kimi より速い想定。
-const MODEL_ID = '@cf/google/gemma-4-26b-a4b-it'
+// gemma-4-26b-a4b は日本語で数字を落とし（2026→206）、ツールも呼べなかった。
+// 履歴を空にしても再現したのでモデル起因。glm は同条件の単体呼び出しで
+// 検索クエリを正しく組み立てられている。
+const MODEL_ID = '@cf/zai-org/glm-4.7-flash'
 // 自前ホストの SearXNG。Cloudflare Access で保護されており Service Token で通す。
 const SEARXNG_URL = 'https://searxng.torounit.foo'
 // LINE のテキストメッセージ上限。
@@ -98,7 +100,9 @@ export class LineChatAgent extends AIChatAgent<CloudflareBindings> {
       // モデルを変えるときは
       // https://developers.cloudflare.com/workers-ai/models/<model>/sync-input.json
       // で入力スキーマを確認すること（モデルページの表には展開されていない）。
-      chat_template_kwargs: { enable_thinking: false },
+      // glm は clear_thinking の既定が false で、思考をターン間で持ち越す。
+      // 持ち越すと本文に独白が混ざり tokens_out が上限に張り付いたので落とす。
+      chat_template_kwargs: { enable_thinking: false, clear_thinking: true },
     })
   }
 
