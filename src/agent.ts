@@ -16,7 +16,7 @@ import { searxngSearch } from './tools/web-search'
 import { trace } from './trace'
 
 // MoE で総 26B・活性 4B。thinking を止めた状態なら kimi より速い想定。
-const MODEL_ID = '@cf/zai-org/glm-4.7-flash'
+const MODEL_ID = '@cf/google/gemma-4-26b-a4b-it'
 // 自前ホストの SearXNG。Cloudflare Access で保護されており Service Token で通す。
 const SEARXNG_URL = 'https://searxng.torounit.foo'
 // LINE のテキストメッセージ上限。
