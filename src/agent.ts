@@ -5,15 +5,20 @@ import {
   pruneMessages,
   stepCountIs,
   streamText,
+  tool,
 } from 'ai'
 import { createWorkersAI } from 'workers-ai-provider'
+import { z } from 'zod'
 import { abortAfter } from './abort'
 import { systemPrompt } from './ai/prompt'
 import { createMessagingClient, replyText } from './line/client'
+import { searxngSearch } from './tools/web-search'
 import { trace } from './trace'
 
 // MoE で総 26B・活性 4B。thinking を止めた状態なら kimi より速い想定。
 const MODEL_ID = '@cf/google/gemma-4-26b-a4b-it'
+// 自前ホストの SearXNG。Cloudflare Access で保護されており Service Token で通す。
+const SEARXNG_URL = 'https://searxng.torounit.foo'
 // LINE のテキストメッセージ上限。
 const MAX_TEXT_LENGTH = 5000
 // "default" は最初の認証済みリクエストで自動的に作られる。
@@ -71,14 +76,16 @@ export class LineChatAgent extends AIChatAgent<CloudflareBindings> {
    * スタブできない。テストは runInDurableObject でこのメソッドを差し替える。
    */
   protected createModel(): LanguageModel {
+    // env.test は AI バインディングを持たない（テストは createModel をスタブするので
+    // 到達しない）ため型上は optional。本番では常に存在する。
+    const { AI } = this.env
+    if (!AI) throw new Error('AI binding is not configured')
+
     // AI Gateway を通す目的は観測。1 回ごとのレイテンシ・トークン数・finish reason が
     // ログに残り、Worker 側のログでは見えないモデル呼び出しの中身を追える。
     // キャッシュは有効にしない。キーがリクエストボディ全体の完全一致で、会話履歴を
     // 含む以上ほぼ当たらないため。
-    return createWorkersAI({
-      binding: this.env.AI,
-      gateway: { id: AI_GATEWAY_ID },
-    })(MODEL_ID, {
+    return createWorkersAI({ binding: AI, gateway: { id: AI_GATEWAY_ID } })(MODEL_ID, {
       sessionAffinity: this.sessionAffinity,
       // thinking を止める。有効なままだと maxOutputTokens を思考だけで使い切り、
       // 本文が 1 文字も出ないまま打ち切られる（AI Gateway のログで、応答が
@@ -89,6 +96,31 @@ export class LineChatAgent extends AIChatAgent<CloudflareBindings> {
       // で入力スキーマを確認すること（モデルページの表には展開されていない）。
       chat_template_kwargs: { enable_thinking: false },
     })
+  }
+
+  /**
+   * モデルが呼べるツール。最新情報を要する質問のときに web 検索させる。
+   * execute を持つサーバ実行ツールなので、tool 呼び出し → 検索 → 最終応答まで
+   * onChatMessage の 1 ストリーム内で完結する（クライアントの往復は不要）。
+   */
+  #tools() {
+    return {
+      webSearch: tool({
+        description:
+          '最新のニュースや出来事、学習データに含まれない可能性のある情報を web で検索する。',
+        inputSchema: z.object({ query: z.string().describe('検索クエリ。日本語でよい。') }),
+        execute: async ({ query }, { abortSignal }) =>
+          searxngSearch(
+            {
+              baseUrl: SEARXNG_URL,
+              accessClientId: this.env.CF_ACCESS_CLIENT_ID,
+              accessClientSecret: this.env.CF_ACCESS_CLIENT_SECRET,
+            },
+            query,
+            abortSignal,
+          ),
+      }),
+    }
   }
 
   // _onFinish は SDK 内部の全呼び出し元が no-op を渡す死んだ引数なので使わない。
@@ -104,6 +136,8 @@ export class LineChatAgent extends AIChatAgent<CloudflareBindings> {
         messages: await convertToModelMessages(this.messages),
         toolCalls: 'before-last-2-messages',
       }),
+      tools: this.#tools(),
+      // ツール呼び出し → 検索 → 最終応答で複数ステップ回るので上限を持たせる。
       stopWhen: stepCountIs(5),
       abortSignal: abortAfter(GENERATION_TIMEOUT_MS, options?.abortSignal),
       maxOutputTokens: 1024,
