@@ -21,6 +21,10 @@ const MODEL_ID = '@cf/zai-org/glm-4.7-flash'
 const SEARXNG_URL = 'https://searxng.torounit.foo'
 // LINE のテキストメッセージ上限。
 const MAX_TEXT_LENGTH = 5000
+// この文言だけを送ると会話履歴を捨てる。壊れた応答が履歴に残るとモデルが
+// それを踏襲して回復しなくなるため、手動で断ち切る手段を用意しておく。
+const RESET_COMMAND = 'リセット'
+const RESET_TEXT = '会話履歴をリセットしました。'
 // "default" は最初の認証済みリクエストで自動的に作られる。
 const AI_GATEWAY_ID = 'default'
 /**
@@ -169,6 +173,14 @@ export class LineChatAgent extends AIChatAgent<CloudflareBindings> {
   async runTurn(request: TurnRequest): Promise<void> {
     const startedAt = Date.now()
     this.#now = request.now
+
+    if (request.text.trim() === RESET_COMMAND) {
+      await this.#reset()
+      trace('reset.done', {})
+      await replyText(createMessagingClient(this.env), request.replyToken, RESET_TEXT)
+      return
+    }
+
     const reply = await this.#generate(request.text).catch((e: unknown) => {
       console.error('generate failed', e)
       return ''
@@ -180,6 +192,15 @@ export class LineChatAgent extends AIChatAgent<CloudflareBindings> {
     const text = reply.length > 0 ? reply : FALLBACK_TEXT
     await replyText(createMessagingClient(this.env), request.replyToken, text)
     trace('reply.sent', { askMs, totalMs: Date.now() - startedAt })
+  }
+
+  /**
+   * 会話履歴を捨てる。saveMessages は書き込みが onChatMessage を起動して
+   * 生成まで走らせてしまうので、書き込みだけを行う persistMessages を使う。
+   * 空配列を渡すだけでは既存の行が残るため _deleteStaleRows で消す。
+   */
+  async #reset(): Promise<void> {
+    await this.persistMessages([], [], { _deleteStaleRows: true })
   }
 
   async #generate(text: string): Promise<string> {

@@ -141,6 +141,24 @@ describe('LineChatAgent の会話履歴', () => {
     expect(JSON.stringify(prompt)).toContain('一回目')
   })
 
+  it('リセットは履歴を捨て、モデルを呼ばずに返信する', async () => {
+    const { target, model } = await stubModelWithCalls('user:U1', '一回目', '二回目')
+    const { calls } = stubLineApi()
+    const say = conversation(target, calls)
+
+    await say('ひとつめ')
+    expect(await say('リセット')).toBe('会話履歴をリセットしました。')
+    await say('ふたつめ')
+
+    // リセット自体は生成を伴わないので、モデル呼び出しは前後の 2 ターンぶんだけ。
+    expect(model.doStreamCalls).toHaveLength(2)
+    // リセット後のターンには、リセット前の発言も返答も持ち越さない。
+    const { prompt } = model.doStreamCalls[1]
+    expect(prompt.map((m) => m.role)).toEqual(['system', 'user'])
+    expect(JSON.stringify(prompt)).not.toContain('ひとつめ')
+    expect(JSON.stringify(prompt)).not.toContain('一回目')
+  })
+
   // reply token は 1 分で切れるので、それを超える生成は打ち切ってフォールバックに倒す。
   it('モデル呼び出しに中断シグナルを渡す', async () => {
     const { target, model } = await stubModelWithCalls('user:U1', 'はい')
