@@ -16,9 +16,10 @@ import { searxngSearch } from './tools/web-search'
 import { trace } from './trace'
 
 // gemma-4-26b-a4b は日本語で数字を落とし（2026→206）、ツールも呼べなかった。
-// 履歴を空にしても再現したのでモデル起因。glm は同条件の単体呼び出しで
-// 検索クエリを正しく組み立てられている。
-const MODEL_ID = '@cf/zai-org/glm-4.7-flash'
+// glm-4.7-flash は検索まではできたが、返答に Markdown を混ぜる指示違反と脱字が
+// あった。llama-4-scout は同条件で検索クエリを正しく組み立て、返答も
+// プレーンテキストで崩れない。
+const MODEL_ID = '@cf/meta/llama-4-scout-17b-16e-instruct'
 // 自前ホストの SearXNG。Cloudflare Access で保護されており Service Token で通す。
 const SEARXNG_URL = 'https://searxng.torounit.foo'
 // LINE のテキストメッセージ上限。
@@ -93,16 +94,18 @@ export class LineChatAgent extends AIChatAgent<CloudflareBindings> {
     // 含む以上ほぼ当たらないため。
     return createWorkersAI({ binding: AI, gateway: { id: AI_GATEWAY_ID } })(MODEL_ID, {
       sessionAffinity: this.sessionAffinity,
-      // thinking を止める。有効なままだと maxOutputTokens を思考だけで使い切り、
-      // 本文が 1 文字も出ないまま打ち切られる（AI Gateway のログで、応答が
-      // reasoning_content のみで tokens_out が上限 1024 に張り付くのを確認）。
-      // キー名はモデルごとに違う。gemma-4 と glm-4.7 は enable_thinking、kimi-k2.6 は thinking。
-      // モデルを変えるときは
+      // llama-4-scout は thinking を持たないので抑制はいらない
+      //（chat_template_kwargs 自体が入力スキーマに無い）。
+      //
+      // thinking のあるモデルに変えるときは必ず止めること。有効なままだと
+      // maxOutputTokens を思考だけで使い切り、本文が 1 文字も出ないまま
+      // 打ち切られる（AI Gateway のログで、応答が reasoning_content のみで
+      // tokens_out が上限に張り付くのを確認）。キー名はモデルごとに違い、
+      // gemma-4 と glm-4.7 は enable_thinking、kimi-k2.6 は thinking。
+      // glm はさらに clear_thinking の既定が false で思考をターン間に持ち越し、
+      // 持ち越すと本文に独白が混ざる。
       // https://developers.cloudflare.com/workers-ai/models/<model>/sync-input.json
       // で入力スキーマを確認すること（モデルページの表には展開されていない）。
-      // glm は clear_thinking の既定が false で、思考をターン間で持ち越す。
-      // 持ち越すと本文に独白が混ざり tokens_out が上限に張り付いたので落とす。
-      chat_template_kwargs: { enable_thinking: false, clear_thinking: true },
     })
   }
 
