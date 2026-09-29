@@ -17,9 +17,9 @@ import { trace } from './trace'
 
 // gemma-4-26b-a4b は日本語で数字を落とし（2026→206）、ツールも呼べなかった。
 // glm-4.7-flash は検索まではできたが、返答に Markdown を混ぜる指示違反と脱字が
-// あった。llama-4-scout は同条件で検索クエリを正しく組み立て、返答も
-// プレーンテキストで崩れない。
-const MODEL_ID = '@cf/meta/llama-4-scout-17b-16e-instruct'
+// あった。llama-4-scout は応答がおかしかった。deepseek-v4-flash は thinking を
+// 止められ、単価は llama-4-scout の約 1.6 倍。
+const MODEL_ID = '@cf/deepseek-ai/deepseek-v4-flash-0731'
 // 自前ホストの SearXNG。Cloudflare Access で保護されており Service Token で通す。
 const SEARXNG_URL = 'https://searxng.torounit.foo'
 // LINE のテキストメッセージ上限。
@@ -94,18 +94,15 @@ export class LineChatAgent extends AIChatAgent<CloudflareBindings> {
     // 含む以上ほぼ当たらないため。
     return createWorkersAI({ binding: AI, gateway: { id: AI_GATEWAY_ID } })(MODEL_ID, {
       sessionAffinity: this.sessionAffinity,
-      // llama-4-scout は thinking を持たないので抑制はいらない
-      //（chat_template_kwargs 自体が入力スキーマに無い）。
-      //
-      // thinking のあるモデルに変えるときは必ず止めること。有効なままだと
-      // maxOutputTokens を思考だけで使い切り、本文が 1 文字も出ないまま
-      // 打ち切られる（AI Gateway のログで、応答が reasoning_content のみで
-      // tokens_out が上限に張り付くのを確認）。キー名はモデルごとに違い、
-      // gemma-4 と glm-4.7 は enable_thinking、kimi-k2.6 は thinking。
-      // glm はさらに clear_thinking の既定が false で思考をターン間に持ち越し、
-      // 持ち越すと本文に独白が混ざる。
+      // thinking は必ず止めること。有効なままだと maxOutputTokens を思考だけで
+      // 使い切り、本文が 1 文字も出ないまま打ち切られる（AI Gateway のログで、
+      // 応答が reasoning_content のみで tokens_out が上限に張り付くのを確認）。
+      // clear_thinking も既定が false で思考をターン間に持ち越し、持ち越すと
+      // 本文に独白が混ざる（glm-4.7 で確認）ので併せて落とす。
+      // キー名はモデルごとに違いうるので、モデルを変えるときは
       // https://developers.cloudflare.com/workers-ai/models/<model>/sync-input.json
       // で入力スキーマを確認すること（モデルページの表には展開されていない）。
+      chat_template_kwargs: { enable_thinking: false, clear_thinking: true },
     })
   }
 
