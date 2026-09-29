@@ -17,9 +17,10 @@ import { trace } from './trace'
 
 // gemma-4-26b-a4b は日本語で数字を落とし（2026→206）、ツールも呼べなかった。
 // glm-4.7-flash は検索まではできたが、返答に Markdown を混ぜる指示違反と脱字が
-// あった。llama-4-scout は応答がおかしかった。deepseek-v4-flash は thinking を
-// 止められ、単価は llama-4-scout の約 1.6 倍。
-const MODEL_ID = '@cf/deepseek-ai/deepseek-v4-flash-0731'
+// あった。llama-4-scout は応答がおかしかった。deepseek-v4-flash・kimi-k2.6・
+// glm-5.x は有料アクセスが必要で、このアカウントでは 403 になる。qwen3.8 は
+// 有料アクセス不要で、thinking を止められる。
+const MODEL_ID = '@cf/qwen/qwen3.8-27b'
 // 自前ホストの SearXNG。Cloudflare Access で保護されており Service Token で通す。
 const SEARXNG_URL = 'https://searxng.torounit.foo'
 // LINE のテキストメッセージ上限。
