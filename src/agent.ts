@@ -5,17 +5,30 @@ import {
   pruneMessages,
   stepCountIs,
   streamText,
+  tool,
 } from 'ai'
 import { createWorkersAI } from 'workers-ai-provider'
+import { z } from 'zod'
 import { abortAfter } from './abort'
 import { systemPrompt } from './ai/prompt'
 import { createMessagingClient, replyText } from './line/client'
+import { searxngSearch } from './tools/web-search'
 import { trace } from './trace'
 
-// MoE で総 26B・活性 4B。thinking を止めた状態なら kimi より速い想定。
-const MODEL_ID = '@cf/google/gemma-4-26b-a4b-it'
+// gemma-4-26b-a4b は日本語で数字を落とし（2026→206）、ツールも呼べなかった。
+// glm-4.7-flash は検索まではできたが、返答に Markdown を混ぜる指示違反と脱字が
+// あった。llama-4-scout は応答がおかしかった。deepseek-v4-flash・kimi-k2.6・
+// glm-5.x は有料アクセスが必要で、このアカウントでは 403 になる。qwen3.8 は
+// 有料アクセス不要で、thinking を止められる。
+const MODEL_ID = '@cf/qwen/qwen3.8-27b'
+// 自前ホストの SearXNG。Cloudflare Access で保護されており Service Token で通す。
+const SEARXNG_URL = 'https://searxng.torounit.foo'
 // LINE のテキストメッセージ上限。
 const MAX_TEXT_LENGTH = 5000
+// この文言だけを送ると会話履歴を捨てる。壊れた応答が履歴に残るとモデルが
+// それを踏襲して回復しなくなるため、手動で断ち切る手段を用意しておく。
+const RESET_COMMAND = 'リセット'
+const RESET_TEXT = '会話履歴をリセットしました。'
 // "default" は最初の認証済みリクエストで自動的に作られる。
 const AI_GATEWAY_ID = 'default'
 /**
@@ -71,24 +84,52 @@ export class LineChatAgent extends AIChatAgent<CloudflareBindings> {
    * スタブできない。テストは runInDurableObject でこのメソッドを差し替える。
    */
   protected createModel(): LanguageModel {
+    // env.test は AI バインディングを持たない（テストは createModel をスタブするので
+    // 到達しない）ため型上は optional。本番では常に存在する。
+    const { AI } = this.env
+    if (!AI) throw new Error('AI binding is not configured')
+
     // AI Gateway を通す目的は観測。1 回ごとのレイテンシ・トークン数・finish reason が
     // ログに残り、Worker 側のログでは見えないモデル呼び出しの中身を追える。
     // キャッシュは有効にしない。キーがリクエストボディ全体の完全一致で、会話履歴を
     // 含む以上ほぼ当たらないため。
-    return createWorkersAI({
-      binding: this.env.AI,
-      gateway: { id: AI_GATEWAY_ID },
-    })(MODEL_ID, {
+    return createWorkersAI({ binding: AI, gateway: { id: AI_GATEWAY_ID } })(MODEL_ID, {
       sessionAffinity: this.sessionAffinity,
-      // thinking を止める。有効なままだと maxOutputTokens を思考だけで使い切り、
-      // 本文が 1 文字も出ないまま打ち切られる（AI Gateway のログで、応答が
-      // reasoning_content のみで tokens_out が上限 1024 に張り付くのを確認）。
-      // キー名はモデルごとに違う。gemma-4 は enable_thinking、kimi-k2.6 は thinking。
-      // モデルを変えるときは
+      // thinking は必ず止めること。有効なままだと maxOutputTokens を思考だけで
+      // 使い切り、本文が 1 文字も出ないまま打ち切られる（AI Gateway のログで、
+      // 応答が reasoning_content のみで tokens_out が上限に張り付くのを確認）。
+      // clear_thinking も既定が false で思考をターン間に持ち越し、持ち越すと
+      // 本文に独白が混ざる（glm-4.7 で確認）ので併せて落とす。
+      // キー名はモデルごとに違いうるので、モデルを変えるときは
       // https://developers.cloudflare.com/workers-ai/models/<model>/sync-input.json
       // で入力スキーマを確認すること（モデルページの表には展開されていない）。
-      chat_template_kwargs: { enable_thinking: false },
+      chat_template_kwargs: { enable_thinking: false, clear_thinking: true },
     })
+  }
+
+  /**
+   * モデルが呼べるツール。最新情報を要する質問のときに web 検索させる。
+   * execute を持つサーバ実行ツールなので、tool 呼び出し → 検索 → 最終応答まで
+   * onChatMessage の 1 ストリーム内で完結する（クライアントの往復は不要）。
+   */
+  #tools() {
+    return {
+      webSearch: tool({
+        description:
+          '最新のニュースや出来事、学習データに含まれない可能性のある情報を web で検索する。',
+        inputSchema: z.object({ query: z.string().describe('検索クエリ。日本語でよい。') }),
+        execute: async ({ query }, { abortSignal }) =>
+          searxngSearch(
+            {
+              baseUrl: SEARXNG_URL,
+              accessClientId: this.env.CF_ACCESS_CLIENT_ID,
+              accessClientSecret: this.env.CF_ACCESS_CLIENT_SECRET,
+            },
+            query,
+            abortSignal,
+          ),
+      }),
+    }
   }
 
   // _onFinish は SDK 内部の全呼び出し元が no-op を渡す死んだ引数なので使わない。
@@ -104,6 +145,8 @@ export class LineChatAgent extends AIChatAgent<CloudflareBindings> {
         messages: await convertToModelMessages(this.messages),
         toolCalls: 'before-last-2-messages',
       }),
+      tools: this.#tools(),
+      // ツール呼び出し → 検索 → 最終応答で複数ステップ回るので上限を持たせる。
       stopWhen: stepCountIs(5),
       abortSignal: abortAfter(GENERATION_TIMEOUT_MS, options?.abortSignal),
       maxOutputTokens: 1024,
@@ -135,6 +178,14 @@ export class LineChatAgent extends AIChatAgent<CloudflareBindings> {
   async runTurn(request: TurnRequest): Promise<void> {
     const startedAt = Date.now()
     this.#now = request.now
+
+    if (request.text.trim() === RESET_COMMAND) {
+      await this.#reset()
+      trace('reset.done', {})
+      await replyText(createMessagingClient(this.env), request.replyToken, RESET_TEXT)
+      return
+    }
+
     const reply = await this.#generate(request.text).catch((e: unknown) => {
       console.error('generate failed', e)
       return ''
@@ -146,6 +197,15 @@ export class LineChatAgent extends AIChatAgent<CloudflareBindings> {
     const text = reply.length > 0 ? reply : FALLBACK_TEXT
     await replyText(createMessagingClient(this.env), request.replyToken, text)
     trace('reply.sent', { askMs, totalMs: Date.now() - startedAt })
+  }
+
+  /**
+   * 会話履歴を捨てる。saveMessages は書き込みが onChatMessage を起動して
+   * 生成まで走らせてしまうので、書き込みだけを行う persistMessages を使う。
+   * 空配列を渡すだけでは既存の行が残るため _deleteStaleRows で消す。
+   */
+  async #reset(): Promise<void> {
+    await this.persistMessages([], [], { _deleteStaleRows: true })
   }
 
   async #generate(text: string): Promise<string> {

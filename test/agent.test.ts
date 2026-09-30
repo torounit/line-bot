@@ -7,6 +7,7 @@ import {
   stubModel,
   stubModelWithCalls,
   textModel,
+  toolCallModel,
 } from './helpers/agent-stub'
 import { type CapturedRequest, stubLineApi } from './helpers/fetch-stub'
 
@@ -107,6 +108,21 @@ describe('LineChatAgent#startTurn', () => {
     expect(reply).toBe('あ'.repeat(3000))
     expect(reply).not.toContain('�')
   })
+
+  it('web 検索ツールを呼ぶと SearXNG を叩いてから返答する', async () => {
+    const agent = await stubModel(
+      'user:U1',
+      toolCallModel('webSearch', { query: '最新ニュース' }, '最新情報はこうです'),
+    )
+    const { calls } = stubLineApi()
+
+    const reply = await conversation(agent, calls)('最新のニュースは？')
+
+    // execute が走って SearXNG を叩いた証跡（stubLineApi は全 fetch を記録する）。
+    expect(calls.some((c) => c.url.startsWith('https://searxng.torounit.foo'))).toBe(true)
+    // ツール結果を受けた 2 回目のパスの本文が返信される。
+    expect(reply).toBe('最新情報はこうです')
+  })
 })
 
 describe('LineChatAgent の会話履歴', () => {
@@ -123,6 +139,24 @@ describe('LineChatAgent の会話履歴', () => {
     expect(prompt.map((m) => m.role)).toEqual(['system', 'user', 'assistant', 'user'])
     expect(JSON.stringify(prompt)).toContain('ひとつめ')
     expect(JSON.stringify(prompt)).toContain('一回目')
+  })
+
+  it('リセットは履歴を捨て、モデルを呼ばずに返信する', async () => {
+    const { target, model } = await stubModelWithCalls('user:U1', '一回目', '二回目')
+    const { calls } = stubLineApi()
+    const say = conversation(target, calls)
+
+    await say('ひとつめ')
+    expect(await say('リセット')).toBe('会話履歴をリセットしました。')
+    await say('ふたつめ')
+
+    // リセット自体は生成を伴わないので、モデル呼び出しは前後の 2 ターンぶんだけ。
+    expect(model.doStreamCalls).toHaveLength(2)
+    // リセット後のターンには、リセット前の発言も返答も持ち越さない。
+    const { prompt } = model.doStreamCalls[1]
+    expect(prompt.map((m) => m.role)).toEqual(['system', 'user'])
+    expect(JSON.stringify(prompt)).not.toContain('ひとつめ')
+    expect(JSON.stringify(prompt)).not.toContain('一回目')
   })
 
   // reply token は 1 分で切れるので、それを超える生成は打ち切ってフォールバックに倒す。

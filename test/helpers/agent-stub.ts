@@ -37,6 +37,43 @@ export const textModel = (...replies: string[]): MockLanguageModelV3 => {
   })
 }
 
+const finishChunk = (reason: 'stop' | 'tool-calls'): StreamChunk => ({
+  type: 'finish',
+  finishReason: { unified: reason, raw: undefined },
+  usage: { inputTokens: NO_INPUT_TOKENS, outputTokens: NO_OUTPUT_TOKENS },
+})
+
+/**
+ * 1 回目のストリームでツールを呼び、2 回目で最終テキストを返すモデル。
+ * AI SDK が 1 回目の tool-call を見て execute を実行し、その結果を 2 回目の
+ * プロンプトに入れて呼び直す、という多段ループを再現する。
+ */
+export const toolCallModel = (
+  toolName: string,
+  args: Record<string, unknown>,
+  finalText: string,
+): MockLanguageModelV3 => {
+  let call = 0
+  return new MockLanguageModelV3({
+    doStream: async () => {
+      call += 1
+      const chunks: StreamChunk[] =
+        call === 1
+          ? [
+              { type: 'tool-call', toolCallId: 'c1', toolName, input: JSON.stringify(args) },
+              finishChunk('tool-calls'),
+            ]
+          : [
+              { type: 'text-start', id: '1' },
+              { type: 'text-delta', id: '1', delta: finalText },
+              { type: 'text-end', id: '1' },
+              finishChunk('stop'),
+            ]
+      return { stream: simulateReadableStream({ chunks }) }
+    },
+  })
+}
+
 /** 呼び出すと必ず失敗するモデル。モデル構築ではなく生成の失敗を再現する。 */
 export const failingModel = (): MockLanguageModelV3 =>
   new MockLanguageModelV3({
