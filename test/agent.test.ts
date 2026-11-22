@@ -12,6 +12,7 @@ import {
 import { type CapturedRequest, stubLineApi } from './helpers/fetch-stub'
 
 const REPLY_URL = 'https://api.line.me/v2/bot/message/reply'
+const HOUR = 60 * 60 * 1000
 
 const replyTexts = (calls: CapturedRequest[]): string[] =>
   calls
@@ -27,12 +28,12 @@ const replyTexts = (calls: CapturedRequest[]): string[] =>
 const conversation = (agent: DurableObjectStub<LineChatAgent>, calls: CapturedRequest[]) => {
   // calls は複数の会話で共有されることがあるので、作成時点の件数を起点にする。
   let replies = replyTexts(calls).length
-  return async (text: string): Promise<string> => {
+  return async (text: string, now = Date.now()): Promise<string> => {
     await agent.startTurn({
       text,
       replyToken: `tok-${replies}`,
       eventId: crypto.randomUUID(),
-      now: Date.now(),
+      now,
     })
     await runDurableObjectAlarm(agent)
     replies += 1
@@ -227,6 +228,51 @@ describe('LineChatAgent の会話履歴', () => {
     expect(prompt.map((m) => m.role)).toEqual(['system', 'user'])
     expect(JSON.stringify(prompt)).not.toContain('ひとつめ')
     expect(JSON.stringify(prompt)).not.toContain('一回目')
+  })
+
+  it('6 時間以上空いてからの発言では、それまでの履歴を持ち越さない', async () => {
+    const { target, model } = await stubModelWithCalls('user:U1', '一回目', '二回目')
+    const { calls } = stubLineApi()
+    const say = conversation(target, calls)
+    const now = Date.now()
+
+    await say('ひとつめ', now)
+    await say('ふたつめ', now + 6 * HOUR + 1)
+
+    const { prompt } = model.doStreamCalls[1]
+    expect(prompt.map((m) => m.role)).toEqual(['system', 'user'])
+    expect(JSON.stringify(prompt)).not.toContain('ひとつめ')
+  })
+
+  it('6 時間以内の発言なら履歴を持ち越す', async () => {
+    const { target, model } = await stubModelWithCalls('user:U1', '一回目', '二回目')
+    const { calls } = stubLineApi()
+    const say = conversation(target, calls)
+    const now = Date.now()
+
+    await say('ひとつめ', now)
+    await say('ふたつめ', now + 6 * HOUR)
+
+    expect(model.doStreamCalls[1].prompt.map((m) => m.role)).toEqual([
+      'system',
+      'user',
+      'assistant',
+      'user',
+    ])
+  })
+
+  // 空き時間は最初の発言からではなく、直前の発言から測る。
+  it('こまめに話しかけていれば、合計で 6 時間を超えても履歴を持ち越す', async () => {
+    const { target, model } = await stubModelWithCalls('user:U1', '一回目', '二回目', '三回目')
+    const { calls } = stubLineApi()
+    const say = conversation(target, calls)
+    const now = Date.now()
+
+    await say('ひとつめ', now)
+    await say('ふたつめ', now + 4 * HOUR)
+    await say('みっつめ', now + 8 * HOUR)
+
+    expect(JSON.stringify(model.doStreamCalls[2].prompt)).toContain('ひとつめ')
   })
 
   // reply token は 1 分で切れるので、それを超える生成は打ち切ってフォールバックに倒す。

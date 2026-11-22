@@ -29,6 +29,12 @@ const MAX_TEXT_LENGTH = 5000
 // それを踏襲して回復しなくなるため、手動で断ち切る手段を用意しておく。
 const RESET_COMMAND = 'リセット'
 const RESET_TEXT = '会話履歴をリセットしました。'
+/**
+ * 最後の発言からこれだけ空いたら、次の発言の前に会話履歴を捨てる。
+ * 時間が空いた後の発言はたいてい新しい話題で、古い履歴は文脈として効かないうえ、
+ * 壊れた応答が残っていればモデルがそれを踏襲する。毎ターン送るトークンも減る。
+ */
+const IDLE_RESET_MS = 6 * 60 * 60 * 1000
 // "default" は最初の認証済みリクエストで自動的に作られる。
 const AI_GATEWAY_ID = 'default'
 /**
@@ -75,7 +81,14 @@ const assistantText = (messages: { role: string; parts: { type: string }[] }[]):
     .join('')
 }
 
-export class LineChatAgent extends AIChatAgent<CloudflareBindings> {
+/** Agent の state。DO の SQLite に永続化される。 */
+export type ChatState = {
+  /** 最後にターンを受けた時刻（TurnRequest.now）。まだ一度も無ければ null。 */
+  lastTurnAt: number | null
+}
+
+export class LineChatAgent extends AIChatAgent<CloudflareBindings, ChatState> {
+  initialState: ChatState = { lastTurnAt: null }
   maxPersistedMessages = 100
   // 復帰先のクライアントが居ない。DO が落ちた後にアラームでターンを再開しても
   // LINE の reply token は失効していて誰にも届かないため、無効にする。
@@ -211,12 +224,20 @@ export class LineChatAgent extends AIChatAgent<CloudflareBindings> {
   async runTurn(request: TurnRequest): Promise<void> {
     const startedAt = Date.now()
     this.#now = request.now
+    // DO 内の Date.now() は alarm 起動直後だと古いので、経過時間も request.now で測る。
+    const { lastTurnAt } = this.state
+    this.setState({ lastTurnAt: request.now })
 
     if (request.text.trim() === RESET_COMMAND) {
       await this.#reset()
       trace('reset.done', {})
       await replyText(createMessagingClient(this.env), request.replyToken, RESET_TEXT)
       return
+    }
+
+    if (lastTurnAt !== null && request.now - lastTurnAt > IDLE_RESET_MS) {
+      await this.#reset()
+      trace('idle.reset', { idleMs: request.now - lastTurnAt })
     }
 
     const reply = await this.#generate(request.text).catch((e: unknown) => {
