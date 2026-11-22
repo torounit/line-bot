@@ -4,6 +4,7 @@ import type { LineChatAgent } from '../src/agent'
 import {
   cleanupAgents,
   failingModel,
+  reasoningModel,
   stubModel,
   stubModelWithCalls,
   textModel,
@@ -210,6 +211,21 @@ describe('LineChatAgent の会話履歴', () => {
     expect(prompt.map((m) => m.role)).toEqual(['system', 'user', 'assistant', 'user'])
     expect(JSON.stringify(prompt)).toContain('ひとつめ')
     expect(JSON.stringify(prompt)).toContain('一回目')
+  })
+
+  it('前のターンの thinking はモデルに送り返さない', async () => {
+    const model = reasoningModel('考えた内容', '一回目', '二回目')
+    const target = await stubModel('user:U1', model)
+    const { calls } = stubLineApi()
+    const say = conversation(target, calls)
+
+    await say('ひとつめ')
+    await say('ふたつめ')
+
+    const { prompt } = model.doStreamCalls[1]
+    expect(prompt.map((m) => m.role)).toEqual(['system', 'user', 'assistant', 'user'])
+    expect(JSON.stringify(prompt)).toContain('一回目')
+    expect(JSON.stringify(prompt)).not.toContain('考えた内容')
   })
 
   it('リセットは履歴を捨て、モデルを呼ばずに返信する', async () => {

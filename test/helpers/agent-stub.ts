@@ -37,6 +37,29 @@ export const textModel = (...replies: string[]): MockLanguageModelV3 => {
   })
 }
 
+/**
+ * thinking（reasoning）を出してから本文を返すモデル。
+ * Claude は thinking を止められないので、毎ターンの応答に reasoning が含まれる。
+ */
+export const reasoningModel = (reasoning: string, ...replies: string[]): MockLanguageModelV3 => {
+  let call = 0
+  return new MockLanguageModelV3({
+    doStream: async () => {
+      const text = replies[Math.min(call++, replies.length - 1)] ?? ''
+      const chunks: StreamChunk[] = [
+        { type: 'reasoning-start', id: 'r1' },
+        { type: 'reasoning-delta', id: 'r1', delta: reasoning },
+        { type: 'reasoning-end', id: 'r1' },
+        { type: 'text-start', id: '1' },
+        { type: 'text-delta', id: '1', delta: text },
+        { type: 'text-end', id: '1' },
+        finishChunk('stop'),
+      ]
+      return { stream: simulateReadableStream({ chunks }) }
+    },
+  })
+}
+
 const finishChunk = (reason: 'stop' | 'tool-calls'): StreamChunk => ({
   type: 'finish',
   finishReason: { unified: reason, raw: undefined },

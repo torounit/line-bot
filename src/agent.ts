@@ -166,6 +166,13 @@ export class LineChatAgent extends AIChatAgent<CloudflareBindings, ChatState> {
       system: systemPrompt(new Date(this.#now ?? Date.now())),
       messages: pruneMessages({
         messages: await convertToModelMessages(this.messages),
+        // 過去のターンの thinking は送り返さない。Claude の thinking ブロックの署名は
+        // system プロンプトとそれより前の履歴に紐づいており、毎ターン変わる現在時刻入りの
+        // system プロンプトや下の toolCalls の刈り込み、maxPersistedMessages による
+        // 先頭の切り捨てで履歴が変わると、送り返した時点で 400 になりうる。
+        // すべての thinking を落とすのは許されている。同じターン内のツールループでは
+        // AI SDK が直前の thinking をそのまま送るので、ここでの刈り込みは影響しない。
+        reasoning: 'all',
         toolCalls: 'before-last-2-messages',
       }),
       tools: this.#tools(),
