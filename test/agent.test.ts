@@ -4,10 +4,10 @@ import type { LineChatAgent } from '../src/agent'
 import {
   cleanupAgents,
   failingModel,
+  reasoningModel,
   stubModel,
   stubModelWithCalls,
   textModel,
-  toolCallModel,
 } from './helpers/agent-stub'
 import { type CapturedRequest, stubLineApi } from './helpers/fetch-stub'
 
@@ -115,19 +115,15 @@ describe('LineChatAgent#startTurn', () => {
     expect(reply).not.toContain('�')
   })
 
-  it('web 検索ツールを呼ぶと SearXNG を叩いてから返答する', async () => {
-    const agent = await stubModel(
-      'user:U1',
-      toolCallModel('webSearch', { query: '最新ニュース' }, '最新情報はこうです'),
-    )
+  it('モデルに Anthropic の web 検索ツールを渡す', async () => {
+    const { target, model } = await stubModelWithCalls('user:U1', 'はい')
     const { calls } = stubLineApi()
 
-    const reply = await conversation(agent, calls)('最新のニュースは？')
+    await conversation(target, calls)('最新のニュースは？')
 
-    // execute が走って SearXNG を叩いた証跡（stubLineApi は全 fetch を記録する）。
-    expect(calls.some((c) => c.url.startsWith('https://searxng.torounit.foo'))).toBe(true)
-    // ツール結果を受けた 2 回目のパスの本文が返信される。
-    expect(reply).toBe('最新情報はこうです')
+    expect(model.doStreamCalls[0].tools).toEqual([
+      expect.objectContaining({ type: 'provider', id: 'anthropic.web_search_20260209' }),
+    ])
   })
 })
 
@@ -210,6 +206,21 @@ describe('LineChatAgent の会話履歴', () => {
     expect(prompt.map((m) => m.role)).toEqual(['system', 'user', 'assistant', 'user'])
     expect(JSON.stringify(prompt)).toContain('ひとつめ')
     expect(JSON.stringify(prompt)).toContain('一回目')
+  })
+
+  it('前のターンの thinking はモデルに送り返さない', async () => {
+    const model = reasoningModel('考えた内容', '一回目', '二回目')
+    const target = await stubModel('user:U1', model)
+    const { calls } = stubLineApi()
+    const say = conversation(target, calls)
+
+    await say('ひとつめ')
+    await say('ふたつめ')
+
+    const { prompt } = model.doStreamCalls[1]
+    expect(prompt.map((m) => m.role)).toEqual(['system', 'user', 'assistant', 'user'])
+    expect(JSON.stringify(prompt)).toContain('一回目')
+    expect(JSON.stringify(prompt)).not.toContain('考えた内容')
   })
 
   it('リセットは履歴を捨て、モデルを呼ばずに返信する', async () => {

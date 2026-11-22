@@ -5,8 +5,14 @@
   "compatibility_date": "2026-07-17",
   // @line/bot-sdk が node:crypto / node:stream / node:buffer を使うため必要。
   "compatibility_flags": ["nodejs_compat"],
+  // AI Gateway の URL（アカウント ID 入り）を得るために使う。
   "ai": {
     "binding": "AI"
+  },
+  // 型生成はここから行う（.env からの推測を置き換える）。
+  // CF_AIG_TOKEN は AI Gateway を呼ぶための Cloudflare API トークン（AI Gateway Run 権限）。
+  "secrets": {
+    "required": ["LINE_CHANNEL_ACCESS_TOKEN", "LINE_CHANNEL_SECRET", "CF_AIG_TOKEN"]
   },
   // Agents SDK は Durable Object 必須。this.sql を使うため new_sqlite_classes で登録する。
   "durable_objects": {
@@ -34,6 +40,10 @@
   // バインディングは環境間で継承されないので、必要なものだけここに書く。
   "env": {
     "test": {
+      // secrets は環境間で継承されない。書かないと型生成で全部 optional になる。
+      "secrets": {
+        "required": ["LINE_CHANNEL_ACCESS_TOKEN", "LINE_CHANNEL_SECRET", "CF_AIG_TOKEN"]
+      },
       "durable_objects": {
         "bindings": [
           {
