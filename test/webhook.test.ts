@@ -164,6 +164,29 @@ describe('POST /webhook LLM 返信', () => {
     expect(typeof traced[2].elapsedMs).toBe('number')
   })
 
+  // 同じ webhookEventId が再送されたら、2 回目は生成も返信もしない。
+  it('再送されたイベントには返信しない', async () => {
+    await stubModel(USER_CONVERSATION_KEY, textModel('返事'))
+    const { calls } = stubLineApi()
+    const event = textMessageEvent('やあ')
+    await post(await signedRequest(callbackRequest([event])))
+    await settleTurn(USER_CONVERSATION_KEY)
+    await waitForReply(calls)
+
+    const logs: string[] = []
+    vi.spyOn(console, 'log').mockImplementation((...args: unknown[]) => {
+      logs.push(String(args[0]))
+    })
+    const redelivered = { ...event, deliveryContext: { isRedelivery: true } }
+    await post(await signedRequest(callbackRequest([redelivered])))
+    await settleTurn(USER_CONVERSATION_KEY)
+
+    expect(calls.filter((c) => c.url === REPLY_URL)).toHaveLength(1)
+    const stages = logs.map((l) => (JSON.parse(l) as { stage: string }).stage)
+    expect(stages).toContain('turn.duplicate')
+    expect(stages).not.toContain('turn.scheduled')
+  })
+
   it('グループではローディングを出さず返信だけする', async () => {
     await stubModel(GROUP_CONVERSATION_KEY, textModel('グループの返事'))
     const { calls } = stubLineApi()

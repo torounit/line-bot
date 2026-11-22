@@ -29,6 +29,12 @@ const MAX_TEXT_LENGTH = 5000
 // それを踏襲して回復しなくなるため、手動で断ち切る手段を用意しておく。
 const RESET_COMMAND = 'リセット'
 const RESET_TEXT = '会話履歴をリセットしました。'
+/**
+ * 最後の発言からこれだけ空いたら、次の発言の前に会話履歴を捨てる。
+ * 時間が空いた後の発言はたいてい新しい話題で、古い履歴は文脈として効かないうえ、
+ * 壊れた応答が残っていればモデルがそれを踏襲する。毎ターン送るトークンも減る。
+ */
+const IDLE_RESET_MS = 6 * 60 * 60 * 1000
 // "default" は最初の認証済みリクエストで自動的に作られる。
 const AI_GATEWAY_ID = 'default'
 /**
@@ -40,11 +46,21 @@ const AI_GATEWAY_ID = 'default'
 const GENERATION_TIMEOUT_MS = 45_000
 // 生成に失敗したときの返答。無言だとユーザーには不具合と区別がつかない。
 const FALLBACK_TEXT = 'ごめんなさい、いまうまく返事ができませんでした。もう一度話しかけてください。'
+/**
+ * 処理済みの webhookEventId を覚えておく期間。再送はこの期間内に届くものだけ捨てる。
+ * 記録は会話ごとの DO に閉じているので、会話の数だけ表が分かれ肥大化しない。
+ */
+const PROCESSED_EVENT_TTL_MS = 24 * 60 * 60 * 1000
 
 /** 1 ターン分の依頼。schedule の payload として JSON で保存される。 */
 export type TurnRequest = {
   text: string
   replyToken: string
+  /**
+   * LINE の webhookEventId。再送されても同じ値で届くので、重複の判定に使う。
+   * 再送を処理すると同じ発言が履歴に二重に入り、生成も二回走る。
+   */
+  eventId: string
   /**
    * webhook を受けた時点の時刻（epoch ms）。
    * Workers のランタイムは Spectre 対策で I/O が起きるまで時刻を更新しない。
@@ -65,7 +81,14 @@ const assistantText = (messages: { role: string; parts: { type: string }[] }[]):
     .join('')
 }
 
-export class LineChatAgent extends AIChatAgent<CloudflareBindings> {
+/** Agent の state。DO の SQLite に永続化される。 */
+export type ChatState = {
+  /** 最後にターンを受けた時刻（TurnRequest.now）。まだ一度も無ければ null。 */
+  lastTurnAt: number | null
+}
+
+export class LineChatAgent extends AIChatAgent<CloudflareBindings, ChatState> {
+  initialState: ChatState = { lastTurnAt: null }
   maxPersistedMessages = 100
   // 復帰先のクライアントが居ない。DO が落ちた後にアラームでターンを再開しても
   // LINE の reply token は失効していて誰にも届かないため、無効にする。
@@ -164,10 +187,33 @@ export class LineChatAgent extends AIChatAgent<CloudflareBindings> {
    * Worker の waitUntil はレスポンス送信後 30 秒で打ち切られるが、生成には
    * 実測で 20 秒前後かかり余裕が無い。alarm ハンドラなら上限が 15 分になる。
    */
-  async startTurn(request: TurnRequest): Promise<void> {
+  async startTurn(request: TurnRequest): Promise<boolean> {
+    if (!this.#markProcessed(request.eventId, request.now)) return false
+
     // schedule のリトライ既定は 3 回。返信が成功した後に再実行されると LINE へ
     // 重複送信されるため 1 回に固定し、失敗時の扱いは runTurn 内で完結させる。
     await this.schedule(0, 'runTurn', request, { retry: { maxAttempts: 1 } })
+    return true
+  }
+
+  /**
+   * イベントを処理済みとして記録する。すでに記録があれば false を返す。
+   * this.sql は同期 API で、判定と記録の間に await を挟まないので、
+   * 同じイベントが並行して届いても DO の中で片方だけが通る。
+   * 記録は受け付けた時点で行う。失敗したターンも runTurn がフォールバック文言で
+   * 返信して完結させるので、後から届いた再送でやり直す必要は無い。
+   */
+  #markProcessed(eventId: string, now: number): boolean {
+    this.sql`CREATE TABLE IF NOT EXISTS line_processed_events (
+      event_id TEXT PRIMARY KEY,
+      received_at INTEGER NOT NULL
+    )`
+    this.sql`DELETE FROM line_processed_events WHERE received_at < ${now - PROCESSED_EVENT_TTL_MS}`
+    const inserted = this.sql`INSERT INTO line_processed_events (event_id, received_at)
+      VALUES (${eventId}, ${now})
+      ON CONFLICT (event_id) DO NOTHING
+      RETURNING event_id`
+    return inserted.length > 0
   }
 
   /**
@@ -178,12 +224,20 @@ export class LineChatAgent extends AIChatAgent<CloudflareBindings> {
   async runTurn(request: TurnRequest): Promise<void> {
     const startedAt = Date.now()
     this.#now = request.now
+    // DO 内の Date.now() は alarm 起動直後だと古いので、経過時間も request.now で測る。
+    const { lastTurnAt } = this.state
+    this.setState({ lastTurnAt: request.now })
 
     if (request.text.trim() === RESET_COMMAND) {
       await this.#reset()
       trace('reset.done', {})
       await replyText(createMessagingClient(this.env), request.replyToken, RESET_TEXT)
       return
+    }
+
+    if (lastTurnAt !== null && request.now - lastTurnAt > IDLE_RESET_MS) {
+      await this.#reset()
+      trace('idle.reset', { idleMs: request.now - lastTurnAt })
     }
 
     const reply = await this.#generate(request.text).catch((e: unknown) => {
