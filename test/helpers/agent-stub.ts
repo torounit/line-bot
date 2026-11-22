@@ -13,6 +13,12 @@ type StreamChunk = StreamResult['stream'] extends ReadableStream<infer C> ? C : 
 const NO_INPUT_TOKENS = { total: 0, noCache: 0, cacheRead: 0, cacheWrite: 0 }
 const NO_OUTPUT_TOKENS = { total: 0, text: 0, reasoning: 0 }
 
+const finishChunk: StreamChunk = {
+  type: 'finish',
+  finishReason: { unified: 'stop', raw: undefined },
+  usage: { inputTokens: NO_INPUT_TOKENS, outputTokens: NO_OUTPUT_TOKENS },
+}
+
 /**
  * onChatMessage は streamText を使うので doStream だけ実装すれば足りる。
  * 渡したテキストを 1 チャンクで返す。
@@ -26,11 +32,7 @@ export const textModel = (...replies: string[]): MockLanguageModelV3 => {
         { type: 'text-start', id: '1' },
         ...(text.length > 0 ? [{ type: 'text-delta' as const, id: '1', delta: text }] : []),
         { type: 'text-end', id: '1' },
-        {
-          type: 'finish',
-          finishReason: { unified: 'stop' as const, raw: undefined },
-          usage: { inputTokens: NO_INPUT_TOKENS, outputTokens: NO_OUTPUT_TOKENS },
-        },
+        finishChunk,
       ]
       return { stream: simulateReadableStream({ chunks }) }
     },
@@ -53,18 +55,12 @@ export const reasoningModel = (reasoning: string, ...replies: string[]): MockLan
         { type: 'text-start', id: '1' },
         { type: 'text-delta', id: '1', delta: text },
         { type: 'text-end', id: '1' },
-        finishChunk('stop'),
+        finishChunk,
       ]
       return { stream: simulateReadableStream({ chunks }) }
     },
   })
 }
-
-const finishChunk = (reason: 'stop' | 'tool-calls'): StreamChunk => ({
-  type: 'finish',
-  finishReason: { unified: reason, raw: undefined },
-  usage: { inputTokens: NO_INPUT_TOKENS, outputTokens: NO_OUTPUT_TOKENS },
-})
 
 /** 呼び出すと必ず失敗するモデル。モデル構築ではなく生成の失敗を再現する。 */
 export const failingModel = (): MockLanguageModelV3 =>

@@ -6,7 +6,7 @@ export default defineConfig({
   test: {
     // AIChatAgent はターンが失敗すると _tryCatchChat が `throw this.onError(e)` を
     // 浮いた Promise で再送出するため、こちらで捕捉できない未処理 rejection が残る。
-    // 失敗自体は saveMessages の status 経由で ask() が例外にしており、テストで検証済み。
+    // 失敗自体は saveMessages の status 経由で #generate が例外にしており、テストで検証済み。
     dangerouslyIgnoreUnhandledErrors: true,
   },
   plugins: [

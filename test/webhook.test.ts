@@ -121,7 +121,6 @@ describe('POST /webhook LLM 返信', () => {
 
     const res = await post(await signedRequest(callbackRequest([textMessageEvent('やあ')])))
 
-    // 生成と返信は DO の alarm に移したので、ここでは返信していない。
     expect(res.status).toBe(200)
     expect(calls).toHaveLength(1)
     expect(calls[0].url).toBe(LOADING_URL)
