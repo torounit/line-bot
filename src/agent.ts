@@ -32,8 +32,8 @@ const RESET_TEXT = '会話履歴をリセットしました。'
  * 壊れた応答が残っていればモデルがそれを踏襲する。毎ターン送るトークンも減る。
  */
 const IDLE_RESET_MS = 6 * 60 * 60 * 1000
-// "default" は最初の認証済みリクエストで自動的に作られる。
-const AI_GATEWAY_ID = 'default'
+// Anthropic の資格情報（BYOK）はこの gateway の Provider Keys に登録する。
+const AI_GATEWAY_ID = 'claude'
 /**
  * 1 回の応答で使える出力トークン。Claude Opus 5.5 は thinking を止められず、
  * thinking のトークンもここに含まれる。返答の長さはプロンプトで 300 文字程度に
