@@ -70,9 +70,6 @@ export class LineChatAgent extends AIChatAgent<CloudflareBindings, ChatState> {
     const { AI } = this.env
     if (!AI) throw new Error('AI binding is not configured')
 
-    // AI Gateway を通すのはモデル呼び出しのログを残すため。キャッシュは会話履歴を
-    // 含むリクエストではほぼ当たらないので使わない。
-    // バインディングは URL を得るためだけに使い、認証は cf-aig-authorization で行う。
     const baseURL = `${await AI.gateway(AI_GATEWAY_ID).getUrl('anthropic')}/v1`
     return createAnthropic({
       baseURL,
