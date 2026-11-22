@@ -1,3 +1,4 @@
+import { createAnthropic } from '@ai-sdk/anthropic'
 import { AIChatAgent, type OnChatMessageOptions } from '@cloudflare/ai-chat'
 import {
   convertToModelMessages,
@@ -7,7 +8,6 @@ import {
   streamText,
   tool,
 } from 'ai'
-import { createWorkersAI } from 'workers-ai-provider'
 import { z } from 'zod'
 import { abortAfter } from './abort'
 import { systemPrompt } from './ai/prompt'
@@ -15,12 +15,9 @@ import { createMessagingClient, replyText } from './line/client'
 import { searxngSearch } from './tools/web-search'
 import { trace } from './trace'
 
-// gemma-4-26b-a4b は日本語で数字を落とし（2026→206）、ツールも呼べなかった。
-// glm-4.7-flash は検索まではできたが、返答に Markdown を混ぜる指示違反と脱字が
-// あった。llama-4-scout は応答がおかしかった。deepseek-v4-flash・kimi-k2.6・
-// glm-5.x は有料アクセスが必要で、このアカウントでは 403 になる。qwen3.8 は
-// 有料アクセス不要で、thinking を止められる。
-const MODEL_ID = '@cf/qwen/qwen3.8-27b'
+// Workers AI のモデル（gemma-4・glm-4.7-flash・llama-4-scout・qwen3.8）は
+// 数字の脱落、ツールを呼べない、Markdown を混ぜる指示違反などで品質が足りなかった。
+const MODEL_ID = 'claude-opus-5-5'
 // 自前ホストの SearXNG。Cloudflare Access で保護されており Service Token で通す。
 const SEARXNG_URL = 'https://searxng.torounit.foo'
 // LINE のテキストメッセージ上限。
@@ -37,6 +34,12 @@ const RESET_TEXT = '会話履歴をリセットしました。'
 const IDLE_RESET_MS = 6 * 60 * 60 * 1000
 // "default" は最初の認証済みリクエストで自動的に作られる。
 const AI_GATEWAY_ID = 'default'
+/**
+ * 1 回の応答で使える出力トークン。Claude Opus 5.5 は thinking を止められず、
+ * thinking のトークンもここに含まれる。返答の長さはプロンプトで 300 文字程度に
+ * 絞っているので、上限は thinking の分を見込んで余裕を持たせる。
+ */
+const MAX_OUTPUT_TOKENS = 4096
 /**
  * 生成を打ち切るまでの時間。reply token の有効期限が 1 分なので、
  * これを超えた返答はもう届けられない。打ち切ってフォールバック文言を返す方がよい。
@@ -103,10 +106,9 @@ export class LineChatAgent extends AIChatAgent<CloudflareBindings, ChatState> {
 
   /**
    * 使うモデルを 1 メソッドに閉じ込めた差し替え可能な継ぎ目。
-   * env.AI はバインディング RPC（fetch を経由しない）のでグローバル fetch では
-   * スタブできない。テストは runInDurableObject でこのメソッドを差し替える。
+   * テストは runInDurableObject でこのメソッドを差し替え、AI Gateway には繋がない。
    */
-  protected createModel(): LanguageModel {
+  protected async createModel(): Promise<LanguageModel> {
     // env.test は AI バインディングを持たない（テストは createModel をスタブするので
     // 到達しない）ため型上は optional。本番では常に存在する。
     const { AI } = this.env
@@ -116,18 +118,20 @@ export class LineChatAgent extends AIChatAgent<CloudflareBindings, ChatState> {
     // ログに残り、Worker 側のログでは見えないモデル呼び出しの中身を追える。
     // キャッシュは有効にしない。キーがリクエストボディ全体の完全一致で、会話履歴を
     // 含む以上ほぼ当たらないため。
-    return createWorkersAI({ binding: AI, gateway: { id: AI_GATEWAY_ID } })(MODEL_ID, {
-      sessionAffinity: this.sessionAffinity,
-      // thinking は必ず止めること。有効なままだと maxOutputTokens を思考だけで
-      // 使い切り、本文が 1 文字も出ないまま打ち切られる（AI Gateway のログで、
-      // 応答が reasoning_content のみで tokens_out が上限に張り付くのを確認）。
-      // clear_thinking も既定が false で思考をターン間に持ち越し、持ち越すと
-      // 本文に独白が混ざる（glm-4.7 で確認）ので併せて落とす。
-      // キー名はモデルごとに違いうるので、モデルを変えるときは
-      // https://developers.cloudflare.com/workers-ai/models/<model>/sync-input.json
-      // で入力スキーマを確認すること（モデルページの表には展開されていない）。
-      chat_template_kwargs: { enable_thinking: false, clear_thinking: true },
-    })
+    // バインディングは URL（アカウント ID 入り）を得るためだけに使う。ここからの
+    // fetch はバインディング経由ではないので、cf-aig-authorization で認証する。
+    const baseURL = `${await AI.gateway(AI_GATEWAY_ID).getUrl('anthropic')}/v1`
+    return createAnthropic({
+      baseURL,
+      // Anthropic の API キーは AI Gateway 側（BYOK か Unified Billing）が持つ。
+      // provider は apiKey が無いと例外を投げるのでダミーを渡し、x-api-key ヘッダは
+      // 消す。リクエストに x-api-key があると Gateway はそちらを資格情報として使う。
+      apiKey: 'unused',
+      headers: {
+        'x-api-key': undefined as unknown as string,
+        'cf-aig-authorization': `Bearer ${this.env.CF_AIG_TOKEN}`,
+      },
+    })(MODEL_ID)
   }
 
   /**
@@ -161,7 +165,7 @@ export class LineChatAgent extends AIChatAgent<CloudflareBindings, ChatState> {
     options?: OnChatMessageOptions,
   ): Promise<Response | undefined> {
     const result = streamText({
-      model: this.createModel(),
+      model: await this.createModel(),
       // ここで new Date() を呼ぶと、alarm 起動直後は前回のターンの時刻が返る。
       system: systemPrompt(new Date(this.#now ?? Date.now())),
       messages: pruneMessages({
@@ -179,8 +183,18 @@ export class LineChatAgent extends AIChatAgent<CloudflareBindings, ChatState> {
       // ツール呼び出し → 検索 → 最終応答で複数ステップ回るので上限を持たせる。
       stopWhen: stepCountIs(5),
       abortSignal: abortAfter(GENERATION_TIMEOUT_MS, options?.abortSignal),
-      maxOutputTokens: 1024,
+      maxOutputTokens: MAX_OUTPUT_TOKENS,
       maxRetries: 1,
+      providerOptions: {
+        anthropic: {
+          // Opus 5.5 は thinking を止められないので effort で深さを抑える。
+          // 既定は medium。雑談と検索の要約が主で、返信の期限（1 分）もあるので low にする。
+          effort: 'low',
+          // 安全分類器に断られたとき、API 側で別のモデルに回して答えさせる。
+          // 断られたままだと本文が空になり、フォールバック文言しか返せない。
+          fallbacks: 'default',
+        },
+      },
     })
 
     // 平文 Response を返すと基底クラスの _sendPlaintextReply がボディをチャンク単位で
