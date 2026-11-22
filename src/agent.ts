@@ -12,8 +12,6 @@ const MODEL_ID = 'claude-sonnet-5-5'
  * 言い換えて検索し直す程度の余地は残す。
  */
 const MAX_WEB_SEARCHES = 3
-// LINE のテキストメッセージ上限。
-const MAX_TEXT_LENGTH = 5000
 // この文言だけを送ると会話履歴を捨てる。壊れた応答が履歴に残るとモデルが
 // それを踏襲して回復しなくなるため、手動で断ち切る手段を用意しておく。
 const RESET_COMMAND = 'リセット'
@@ -267,6 +265,6 @@ export class LineChatAgent extends AIChatAgent<CloudflareBindings, ChatState> {
       throw new Error(result.error ?? `chat turn ${result.status}`)
     }
 
-    return assistantText(this.messages).trim().slice(0, MAX_TEXT_LENGTH)
+    return assistantText(this.messages).trim()
   }
 }
