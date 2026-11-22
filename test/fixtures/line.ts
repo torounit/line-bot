@@ -14,7 +14,7 @@ export const roomSource = () => ({ type: 'room' as const, roomId: ROOM_ID, userI
 export const USER_CONVERSATION_KEY = `user:${USER_ID}`
 export const GROUP_CONVERSATION_KEY = `group:${GROUP_ID}`
 
-// webhook.EventBase の必須項目を埋めた土台。個々のテストは差分だけ書く。
+/** webhook.EventBase の必須項目を埋めた土台。個々のテストは差分だけ書く。 */
 const eventBase = {
   mode: 'active' as const,
   timestamp: 1700000000000,

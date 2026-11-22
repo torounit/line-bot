@@ -24,7 +24,7 @@ const ENDPOINT = 'https://example.com/webhook'
 const REPLY_URL = 'https://api.line.me/v2/bot/message/reply'
 const LOADING_URL = 'https://api.line.me/v2/bot/chat/loading/start'
 
-// waitUntil に載せた返信の完了を待ってから返す。
+/** webhook にリクエストを送り、waitUntil に載せた処理の完了を待ってから応答を返す。 */
 const post = async (init: RequestInit): Promise<Response> => {
   const ctx = createExecutionContext()
   const res = await app.fetch(new Request(ENDPOINT, init), env, ctx)
@@ -32,14 +32,13 @@ const post = async (init: RequestInit): Promise<Response> => {
   return res
 }
 
-/** 生成と返信は DO の alarm に載っているので、明示的に発火させる。 */
+/** 会話の DO の alarm を発火させ、依頼済みのターンの生成と返信を走らせる。 */
 const settleTurn = (key: string) => runDurableObjectAlarm(stub(key))
 
-/**
- * schedule(0) はほぼ即時なので miniflare が自発的に発火する場合もある。
- * 発火経路を問わず、返信が 1 件届いたことだけを見る。
- */
+/** 返信が 1 件届くまで待ち、それを返す。 */
 const waitForReply = async (calls: CapturedRequest[]): Promise<CapturedRequest> => {
+  // schedule(0) はほぼ即時なので miniflare が自発的に発火する場合もある。
+  // 発火経路を問わず、返信が 1 件届いたことだけを見る。
   await vi.waitFor(() => expect(calls.filter((c) => c.url === REPLY_URL)).toHaveLength(1))
   return calls.filter((c) => c.url === REPLY_URL)[0]
 }
