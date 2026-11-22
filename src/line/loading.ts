@@ -4,7 +4,6 @@ import type { messagingApi } from '@line/bot-sdk'
 export type LineLoadingShower = Pick<messagingApi.MessagingApiClient, 'showLoadingAnimation'>
 
 /** ローディングを出す秒数の既定値。LINE の制約で 5 の倍数・最大 60。 */
-// 返信が届けば LINE 側で自動的に消えるので、生成にかかる時間より長めにとる。
 const DEFAULT_LOADING_SECONDS = 20
 
 /**

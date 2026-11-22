@@ -19,9 +19,6 @@ export async function replyText(
   text: string,
 ): Promise<boolean> {
   const messages = [{ type: 'text' as const, text: text.slice(0, MAX_TEXT_LENGTH) }]
-
-  // 返信の失敗を webhook のステータスに波及させると LINE 側が webhook を無効化するため、
-  // ここで握りつぶして真偽値に落とす。
   return client
     .replyMessage({ replyToken, messages })
     .then(() => true)
