@@ -1,11 +1,16 @@
 import type { messagingApi } from '@line/bot-sdk'
 
-// テストで差し替えられるよう、使うメソッドだけに絞った型。
+/** showLoading が使うメソッドだけに絞ったクライアント。テストでは偽物を渡す。 */
 export type LineLoadingShower = Pick<messagingApi.MessagingApiClient, 'showLoadingAnimation'>
 
-// loadingSeconds は 5 の倍数・最大 60。生成が終われば LINE 側で自動的に消えるので上限側に寄せる。
+/** ローディングを出す秒数の既定値。LINE の制約で 5 の倍数・最大 60。 */
+// 返信が届けば LINE 側で自動的に消えるので、生成にかかる時間より長めにとる。
 const DEFAULT_LOADING_SECONDS = 20
 
+/**
+ * ローディングアニメーションを出す。失敗しても例外は投げない。
+ * @returns 表示できたら true
+ */
 export async function showLoading(
   client: LineLoadingShower,
   chatId: string,

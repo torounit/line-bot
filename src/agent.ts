@@ -7,63 +7,41 @@ import { createMessagingClient, replyText } from './line/client'
 import { trace } from './trace'
 
 const MODEL_ID = 'claude-sonnet-5-5'
-/**
- * 1 回の応答で web 検索できる回数。検索は 1 回ごとに課金され、待ち時間も延びる。
- * 言い換えて検索し直す程度の余地は残す。
- */
+/** 1 回の応答で web 検索できる回数。 */
+// 検索は 1 回ごとに課金され待ち時間も延びるが、言い換えて検索し直す程度の余地は残す。
 const MAX_WEB_SEARCHES = 3
-// この文言だけを送ると会話履歴を捨てる。壊れた応答が履歴に残るとモデルが
-// それを踏襲して回復しなくなるため、手動で断ち切る手段を用意しておく。
+/** この文言だけを送ると会話履歴を捨てる。 */
 const RESET_COMMAND = 'リセット'
 const RESET_TEXT = '会話履歴をリセットしました。'
-/**
- * 最後の発言からこれだけ空いたら、次の発言の前に会話履歴を捨てる。
- * 時間が空いた後の発言はたいてい新しい話題で、古い履歴は文脈として効かないうえ、
- * 壊れた応答が残っていればモデルがそれを踏襲する。毎ターン送るトークンも減る。
- */
+/** 最後の発言からこれだけ空いたら、次の発言の前に会話履歴を捨てる。 */
 const IDLE_RESET_MS = 6 * 60 * 60 * 1000
-// Anthropic の資格情報（BYOK）はこの gateway の Provider Keys に登録する。
+/** Anthropic の資格情報（BYOK）を Provider Keys に登録してある AI Gateway の ID。 */
 const AI_GATEWAY_ID = 'claude'
-/**
- * 1 回の応答で使える出力トークン。thinking のトークンもここに含まれる。
- * 返答の長さはプロンプトで 300 文字程度に絞っているので、上限は thinking の分を
- * 見込んで余裕を持たせる。
- */
+/** 1 回の応答で使える出力トークン。thinking のトークンも含む。 */
+// 返答はプロンプトで 300 文字程度に絞っているので、thinking の分を見込んで余裕を持たせる。
 const MAX_OUTPUT_TOKENS = 4096
-/**
- * 生成を打ち切るまでの時間。reply token の有効期限が 1 分なので、
- * これを超えた返答はもう届けられない。打ち切ってフォールバック文言を返す方がよい。
- */
+/** 生成を打ち切るまでの時間。 */
+// reply token の有効期限が 1 分で、それを過ぎた返答はもう届けられない。
 const GENERATION_TIMEOUT_MS = 45_000
-// 生成に失敗したときの返答。無言だとユーザーには不具合と区別がつかない。
+/** 生成に失敗したときの返答。 */
 const FALLBACK_TEXT = 'ごめんなさい、いまうまく返事ができませんでした。もう一度話しかけてください。'
-/**
- * 処理済みの webhookEventId を覚えておく期間。再送はこの期間内に届くものだけ捨てる。
- * 記録は会話ごとの DO に閉じているので、会話の数だけ表が分かれ肥大化しない。
- */
+/** 処理済みの webhookEventId を覚えておく期間。この期間内に届いた再送だけを捨てる。 */
+// 記録は会話ごとの DO に閉じているので、この期間ぶん貯めても表は大きくならない。
 const PROCESSED_EVENT_TTL_MS = 24 * 60 * 60 * 1000
 
 /** 1 ターン分の依頼。schedule の payload として JSON で保存される。 */
 export type TurnRequest = {
   text: string
   replyToken: string
-  /**
-   * LINE の webhookEventId。再送されても同じ値で届くので、重複の判定に使う。
-   * 再送を処理すると同じ発言が履歴に二重に入り、生成も二回走る。
-   */
+  /** LINE の webhookEventId。再送されても同じ値で届くので、重複の判定に使う。 */
   eventId: string
-  /**
-   * webhook を受けた時点の時刻（epoch ms）。
-   * Workers のランタイムは Spectre 対策で I/O が起きるまで時刻を更新しない。
-   * alarm で起きた直後の DO には外向きの I/O がまだ無く、new Date() が
-   * 前回のターンで最後に I/O した時刻——最後に成功した生成の時刻——を返し続ける。
-   * リクエストを受け取った直後で時計が新しい Worker 側から渡す。
-   */
+  /** webhook を受けた時点の時刻（epoch ms）。DO の中では Date.now() ではなくこれを使う。 */
   now: number
 }
 
-/** assistant メッセージの text パートを連結する（SDK の private な同等処理を再実装）。 */
+/** 最後の assistant メッセージの text パートを連結する。 */
 const assistantText = (messages: { role: string; parts: { type: string }[] }[]): string => {
+  // SDK にも同等の処理があるが private なので再実装する。
   const message = [...messages].reverse().find((m) => m.role === 'assistant')
   if (!message) return ''
   return message.parts
@@ -82,19 +60,13 @@ export class LineChatAgent extends AIChatAgent<CloudflareBindings, ChatState> {
   initialState: ChatState = { lastTurnAt: null }
   maxPersistedMessages = 100
   // 復帰先のクライアントが居ない。DO が落ちた後にアラームでターンを再開しても
-  // LINE の reply token は失効していて誰にも届かないため、無効にする。
+  // LINE の reply token は失効していて誰にも届かない。
   chatRecovery = false
 
-  /**
-   * 進行中のターンの TurnRequest.now。saveMessages から onChatMessage までは
-   * 1 ターンずつ進む（_runExclusiveChatTurn が直列化する）ので、インスタンスに置いて受け渡す。
-   */
+  /** 進行中のターンの TurnRequest.now。 */
   #now: number | undefined
 
-  /**
-   * 使うモデルを 1 メソッドに閉じ込めた差し替え可能な継ぎ目。
-   * テストは runInDurableObject でこのメソッドを差し替え、AI Gateway には繋がない。
-   */
+  /** 生成に使うモデルを返す。テストは runInDurableObject でこのメソッドを差し替える。 */
   protected async createModel(): Promise<LanguageModel> {
     // env.test は AI バインディングを持たない（テストは createModel をスタブするので
     // 到達しない）ため型上は optional。本番では常に存在する。
@@ -121,13 +93,11 @@ export class LineChatAgent extends AIChatAgent<CloudflareBindings, ChatState> {
     })(MODEL_ID)
   }
 
-  /**
-   * モデルが呼べるツール。最新情報を要する質問のときに web 検索させる。
-   * Anthropic のサーバツールなので、検索は API の中で行われ、検索 → 最終応答まで
-   * 1 回のモデル呼び出しで完結する（こちらで execute する必要は無い）。
-   */
+  /** モデルに渡すツール。最新情報を要する質問で web 検索させる。 */
   #tools() {
     return {
+      // Anthropic のサーバツールなので、検索は API の中で行われ、検索 → 最終応答まで
+      // 1 回のモデル呼び出しで完結する（こちらで execute する必要は無い）。
       web_search: anthropic.tools.webSearch_20260209({
         maxUses: MAX_WEB_SEARCHES,
         // 日本の利用者向けに、地域に関わる検索結果を寄せる。
@@ -136,7 +106,10 @@ export class LineChatAgent extends AIChatAgent<CloudflareBindings, ChatState> {
     }
   }
 
-  // _onFinish は SDK 内部の全呼び出し元が no-op を渡す死んだ引数なので使わない。
+  /**
+   * 1 ターンぶんのモデルの応答をストリームで返す。AIChatAgent から呼ばれる。
+   * @param _onFinish 使わない。SDK 内部の呼び出し元はすべて no-op を渡す。
+   */
   async onChatMessage(
     _onFinish: unknown,
     options?: OnChatMessageOptions,
@@ -155,6 +128,7 @@ export class LineChatAgent extends AIChatAgent<CloudflareBindings, ChatState> {
         toolCalls: 'before-last-2-messages',
       }),
       tools: this.#tools(),
+      // 期限を過ぎた返答は届けられないので、打ち切ってフォールバック文言を返す。
       abortSignal: abortAfter(GENERATION_TIMEOUT_MS, options?.abortSignal),
       maxOutputTokens: MAX_OUTPUT_TOKENS,
       maxRetries: 1,
@@ -177,13 +151,17 @@ export class LineChatAgent extends AIChatAgent<CloudflareBindings, ChatState> {
   }
 
   /**
-   * webhook からの入口。生成を待たずにスケジュールして即座に返る。
-   * Worker の waitUntil はレスポンス送信後 30 秒で打ち切られるが、生成には
-   * 実測で 20 秒前後かかり余裕が無い。alarm ハンドラなら上限が 15 分になる。
+   * webhook からの入口。生成を待たずに runTurn をスケジュールして即座に返る。
+   * @returns 受け付けたら true、処理済みのイベントの再送なら false
    */
   async startTurn(request: TurnRequest): Promise<boolean> {
+    // 再送を処理すると同じ発言が履歴に二重に入り、生成も二回走る。
+    // 記録は受け付けた時点で行う。失敗したターンも runTurn がフォールバック文言で
+    // 返信して完結させるので、後から届いた再送でやり直す必要は無い。
     if (!this.#markProcessed(request.eventId, request.now)) return false
 
+    // Worker の waitUntil はレスポンス送信後 30 秒で打ち切られるが、生成には
+    // 実測で 20 秒前後かかり余裕が無い。alarm ハンドラなら上限が 15 分になる。
     // schedule のリトライ既定は 3 回。返信が成功した後に再実行されると LINE へ
     // 重複送信されるため 1 回に固定し、失敗時の扱いは runTurn 内で完結させる。
     await this.schedule(0, 'runTurn', request, { retry: { maxAttempts: 1 } })
@@ -191,13 +169,11 @@ export class LineChatAgent extends AIChatAgent<CloudflareBindings, ChatState> {
   }
 
   /**
-   * イベントを処理済みとして記録する。すでに記録があれば false を返す。
-   * this.sql は同期 API で、判定と記録の間に await を挟まないので、
-   * 同じイベントが並行して届いても DO の中で片方だけが通る。
-   * 記録は受け付けた時点で行う。失敗したターンも runTurn がフォールバック文言で
-   * 返信して完結させるので、後から届いた再送でやり直す必要は無い。
+   * イベントを処理済みとして記録する。同じイベントが並行して届いても true になるのは 1 回だけ。
+   * @returns 初めて受け付けたイベントなら true
    */
   #markProcessed(eventId: string, now: number): boolean {
+    // this.sql は同期 API で、判定と記録の間に await を挟まないので DO の中で競合しない。
     this.sql`CREATE TABLE IF NOT EXISTS line_processed_events (
       event_id TEXT PRIMARY KEY,
       received_at INTEGER NOT NULL
@@ -211,14 +187,19 @@ export class LineChatAgent extends AIChatAgent<CloudflareBindings, ChatState> {
   }
 
   /**
-   * schedule のコールバック。失敗しても再配送されないため、返信までをここで完結させる。
+   * schedule のコールバック。1 ターンを生成して返信する。
+   * 生成に失敗してもフォールバック文言で返信する。
    */
   async runTurn(request: TurnRequest): Promise<void> {
     const startedAt = Date.now()
+    // saveMessages から onChatMessage までは 1 ターンずつ進む（_runExclusiveChatTurn が
+    // 直列化する）ので、インスタンスに置いて受け渡しても他のターンと混ざらない。
     this.#now = request.now
     const { lastTurnAt } = this.state
     this.setState({ lastTurnAt: request.now })
 
+    // 壊れた応答が履歴に残るとモデルがそれを踏襲して回復しなくなるので、
+    // 手動で断ち切れるようにする。
     if (request.text.trim() === RESET_COMMAND) {
       await this.#reset()
       trace('reset.done', {})
@@ -226,6 +207,8 @@ export class LineChatAgent extends AIChatAgent<CloudflareBindings, ChatState> {
       return
     }
 
+    // 時間が空いた後の発言はたいてい新しい話題で、古い履歴は文脈として効かない。
+    // 壊れた応答が残っていればモデルがそれを踏襲するし、毎ターン送るトークンも減る。
     if (lastTurnAt !== null && request.now - lastTurnAt > IDLE_RESET_MS) {
       await this.#reset()
       trace('idle.reset', { idleMs: request.now - lastTurnAt })
@@ -238,21 +221,22 @@ export class LineChatAgent extends AIChatAgent<CloudflareBindings, ChatState> {
     const askMs = Date.now() - startedAt
     trace('ask.done', { askMs, replyLength: reply.length, promptTime: request.now })
 
+    // 無言だとユーザーには不具合と区別がつかないので、失敗しても返信する。
     // 空文字は LINE が受け付けないので、生成失敗と同じくフォールバック文言に倒す。
     const text = reply.length > 0 ? reply : FALLBACK_TEXT
     await replyText(createMessagingClient(this.env), request.replyToken, text)
     trace('reply.sent', { askMs, totalMs: Date.now() - startedAt })
   }
 
-  /**
-   * 会話履歴を捨てる。saveMessages は書き込みが onChatMessage を起動して
-   * 生成まで走らせてしまうので、書き込みだけを行う persistMessages を使う。
-   * 空配列を渡すだけでは既存の行が残るため _deleteStaleRows で消す。
-   */
+  /** 会話履歴を捨てる。 */
   async #reset(): Promise<void> {
+    // saveMessages は書き込みが onChatMessage を起動して生成まで走らせてしまうので、
+    // 書き込みだけを行う persistMessages を使う。
+    // 空配列を渡すだけでは既存の行が残るため _deleteStaleRows で消す。
     await this.persistMessages([], [], { _deleteStaleRows: true })
   }
 
+  /** 発言を履歴に足して生成し、返答の本文を返す。 */
   async #generate(text: string): Promise<string> {
     // 関数形の saveMessages はターンロックの内側で走るため、同一会話に複数イベントが
     // 並行して届いても最新の履歴を見る。
