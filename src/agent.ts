@@ -17,7 +17,7 @@ import { trace } from './trace'
 
 // Workers AI のモデル（gemma-4・glm-4.7-flash・llama-4-scout・qwen3.8）は
 // 数字の脱落、ツールを呼べない、Markdown を混ぜる指示違反などで品質が足りなかった。
-const MODEL_ID = 'claude-opus-5-5'
+const MODEL_ID = 'claude-sonnet-5-5'
 // 自前ホストの SearXNG。Cloudflare Access で保護されており Service Token で通す。
 const SEARXNG_URL = 'https://searxng.torounit.foo'
 // LINE のテキストメッセージ上限。
@@ -35,16 +35,16 @@ const IDLE_RESET_MS = 6 * 60 * 60 * 1000
 // Anthropic の資格情報（BYOK）はこの gateway の Provider Keys に登録する。
 const AI_GATEWAY_ID = 'claude'
 /**
- * 1 回の応答で使える出力トークン。Claude Opus 5.5 は thinking を止められず、
- * thinking のトークンもここに含まれる。返答の長さはプロンプトで 300 文字程度に
- * 絞っているので、上限は thinking の分を見込んで余裕を持たせる。
+ * 1 回の応答で使える出力トークン。thinking のトークンもここに含まれる。
+ * 返答の長さはプロンプトで 300 文字程度に絞っているので、上限は thinking の分を
+ * 見込んで余裕を持たせる。
  */
 const MAX_OUTPUT_TOKENS = 4096
 /**
  * 生成を打ち切るまでの時間。reply token の有効期限が 1 分なので、
  * これを超えた返答はもう届けられない。打ち切ってフォールバック文言を返す方がよい。
- * 実測では thinking を止めた状態で 2〜4 秒なので、通常は掛からない。
- * 過去に thinking が暴走して 300 秒走り続けた記録がある（DO の alarm は 15 分動ける）。
+ * 過去に Workers AI のモデルで thinking が暴走して 300 秒走り続けた記録がある
+ * （DO の alarm は 15 分動ける）。
  */
 const GENERATION_TIMEOUT_MS = 45_000
 // 生成に失敗したときの返答。無言だとユーザーには不具合と区別がつかない。
@@ -187,8 +187,8 @@ export class LineChatAgent extends AIChatAgent<CloudflareBindings, ChatState> {
       maxRetries: 1,
       providerOptions: {
         anthropic: {
-          // Opus 5.5 は thinking を止められないので effort で深さを抑える。
-          // 既定は medium。雑談と検索の要約が主で、返信の期限（1 分）もあるので low にする。
+          // thinking の深さは effort で抑える（Sonnet 5.5 は thinking: disabled が 400）。
+          // 既定は high。雑談と検索の要約が主で、返信の期限（1 分）もあるので low にする。
           effort: 'low',
           // 安全分類器に断られたとき、API 側で別のモデルに回して答えさせる。
           // 断られたままだと本文が空になり、フォールバック文言しか返せない。
