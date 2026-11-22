@@ -6,8 +6,6 @@ import { systemPrompt } from './ai/prompt'
 import { createMessagingClient, replyText } from './line/client'
 import { trace } from './trace'
 
-// Workers AI のモデル（gemma-4・glm-4.7-flash・llama-4-scout・qwen3.8）は
-// 数字の脱落、ツールを呼べない、Markdown を混ぜる指示違反などで品質が足りなかった。
 const MODEL_ID = 'claude-sonnet-5-5'
 /**
  * 1 回の応答で web 検索できる回数。検索は 1 回ごとに課金され、待ち時間も延びる。
@@ -37,8 +35,6 @@ const MAX_OUTPUT_TOKENS = 4096
 /**
  * 生成を打ち切るまでの時間。reply token の有効期限が 1 分なので、
  * これを超えた返答はもう届けられない。打ち切ってフォールバック文言を返す方がよい。
- * 過去に Workers AI のモデルで thinking が暴走して 300 秒走り続けた記録がある
- * （DO の alarm は 15 分動ける）。
  */
 const GENERATION_TIMEOUT_MS = 45_000
 // 生成に失敗したときの返答。無言だとユーザーには不具合と区別がつかない。
@@ -92,9 +88,8 @@ export class LineChatAgent extends AIChatAgent<CloudflareBindings, ChatState> {
   chatRecovery = false
 
   /**
-   * 進行中のターンで使う「現在時刻」。webhook を受けた Worker から渡される。
-   * saveMessages から onChatMessage までは同期的に 1 ターンずつ進む
-   * （_runExclusiveChatTurn が直列化する）ので、インスタンスに置いて受け渡す。
+   * 進行中のターンの TurnRequest.now。saveMessages から onChatMessage までは
+   * 1 ターンずつ進む（_runExclusiveChatTurn が直列化する）ので、インスタンスに置いて受け渡す。
    */
   #now: number | undefined
 
@@ -150,7 +145,6 @@ export class LineChatAgent extends AIChatAgent<CloudflareBindings, ChatState> {
   ): Promise<Response | undefined> {
     const result = streamText({
       model: await this.createModel(),
-      // ここで new Date() を呼ぶと、alarm 起動直後は前回のターンの時刻が返る。
       system: systemPrompt(new Date(this.#now ?? Date.now())),
       messages: pruneMessages({
         messages: await convertToModelMessages(this.messages),
@@ -219,14 +213,11 @@ export class LineChatAgent extends AIChatAgent<CloudflareBindings, ChatState> {
   }
 
   /**
-   * schedule のコールバック。DO の alarm() の中で実行されるので、
-   * 呼び出し元 Worker の waitUntil の制限を受けない。
-   * 失敗しても再配送されないため、返信までをここで完結させる。
+   * schedule のコールバック。失敗しても再配送されないため、返信までをここで完結させる。
    */
   async runTurn(request: TurnRequest): Promise<void> {
     const startedAt = Date.now()
     this.#now = request.now
-    // DO 内の Date.now() は alarm 起動直後だと古いので、経過時間も request.now で測る。
     const { lastTurnAt } = this.state
     this.setState({ lastTurnAt: request.now })
 
