@@ -16,11 +16,11 @@ export async function showLoading(
   loadingSeconds: number = DEFAULT_LOADING_SECONDS,
 ): Promise<boolean> {
   // ローディング表示は演出でしかないので、失敗しても返信は続行する。
-  return client
-    .showLoadingAnimation({ chatId, loadingSeconds })
-    .then(() => true)
-    .catch((e: unknown) => {
-      console.error('loading animation failed', e)
-      return false
-    })
+  try {
+    await client.showLoadingAnimation({ chatId, loadingSeconds })
+    return true
+  } catch (e) {
+    console.error('loading animation failed', e)
+    return false
+  }
 }

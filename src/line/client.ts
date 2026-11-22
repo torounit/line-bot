@@ -19,11 +19,11 @@ export async function replyText(
   text: string,
 ): Promise<boolean> {
   const messages = [{ type: 'text' as const, text: text.slice(0, MAX_TEXT_LENGTH) }]
-  return client
-    .replyMessage({ replyToken, messages })
-    .then(() => true)
-    .catch((e: unknown) => {
-      console.error('reply failed', e)
-      return false
-    })
+  try {
+    await client.replyMessage({ replyToken, messages })
+    return true
+  } catch (e) {
+    console.error('reply failed', e)
+    return false
+  }
 }

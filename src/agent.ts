@@ -191,10 +191,12 @@ export class LineChatAgent extends AIChatAgent<CloudflareBindings, ChatState> {
       trace('idle.reset', { idleMs: request.now - lastTurnAt })
     }
 
-    const reply = await this.#generate(request.text).catch((e: unknown) => {
+    let reply = ''
+    try {
+      reply = await this.#generate(request.text)
+    } catch (e) {
       console.error('generate failed', e)
-      return ''
-    })
+    }
     const askMs = Date.now() - startedAt
     trace('ask.done', { askMs, replyLength: reply.length, promptTime: request.now })
 
