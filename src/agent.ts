@@ -40,11 +40,21 @@ const AI_GATEWAY_ID = 'default'
 const GENERATION_TIMEOUT_MS = 45_000
 // 生成に失敗したときの返答。無言だとユーザーには不具合と区別がつかない。
 const FALLBACK_TEXT = 'ごめんなさい、いまうまく返事ができませんでした。もう一度話しかけてください。'
+/**
+ * 処理済みの webhookEventId を覚えておく期間。再送はこの期間内に届くものだけ捨てる。
+ * 記録は会話ごとの DO に閉じているので、会話の数だけ表が分かれ肥大化しない。
+ */
+const PROCESSED_EVENT_TTL_MS = 24 * 60 * 60 * 1000
 
 /** 1 ターン分の依頼。schedule の payload として JSON で保存される。 */
 export type TurnRequest = {
   text: string
   replyToken: string
+  /**
+   * LINE の webhookEventId。再送されても同じ値で届くので、重複の判定に使う。
+   * 再送を処理すると同じ発言が履歴に二重に入り、生成も二回走る。
+   */
+  eventId: string
   /**
    * webhook を受けた時点の時刻（epoch ms）。
    * Workers のランタイムは Spectre 対策で I/O が起きるまで時刻を更新しない。
@@ -164,10 +174,33 @@ export class LineChatAgent extends AIChatAgent<CloudflareBindings> {
    * Worker の waitUntil はレスポンス送信後 30 秒で打ち切られるが、生成には
    * 実測で 20 秒前後かかり余裕が無い。alarm ハンドラなら上限が 15 分になる。
    */
-  async startTurn(request: TurnRequest): Promise<void> {
+  async startTurn(request: TurnRequest): Promise<boolean> {
+    if (!this.#markProcessed(request.eventId, request.now)) return false
+
     // schedule のリトライ既定は 3 回。返信が成功した後に再実行されると LINE へ
     // 重複送信されるため 1 回に固定し、失敗時の扱いは runTurn 内で完結させる。
     await this.schedule(0, 'runTurn', request, { retry: { maxAttempts: 1 } })
+    return true
+  }
+
+  /**
+   * イベントを処理済みとして記録する。すでに記録があれば false を返す。
+   * this.sql は同期 API で、判定と記録の間に await を挟まないので、
+   * 同じイベントが並行して届いても DO の中で片方だけが通る。
+   * 記録は受け付けた時点で行う。失敗したターンも runTurn がフォールバック文言で
+   * 返信して完結させるので、後から届いた再送でやり直す必要は無い。
+   */
+  #markProcessed(eventId: string, now: number): boolean {
+    this.sql`CREATE TABLE IF NOT EXISTS line_processed_events (
+      event_id TEXT PRIMARY KEY,
+      received_at INTEGER NOT NULL
+    )`
+    this.sql`DELETE FROM line_processed_events WHERE received_at < ${now - PROCESSED_EVENT_TTL_MS}`
+    const inserted = this.sql`INSERT INTO line_processed_events (event_id, received_at)
+      VALUES (${eventId}, ${now})
+      ON CONFLICT (event_id) DO NOTHING
+      RETURNING event_id`
+    return inserted.length > 0
   }
 
   /**

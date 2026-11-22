@@ -41,14 +41,20 @@ async function handleEvent(
   if (chatId !== null) await showLoading(client, chatId)
 
   const chatAgent = await getAgentByName(env.LineChatAgent, key)
-  await chatAgent.startTurn({
+  const scheduled = await chatAgent.startTurn({
     text: event.message.text,
     replyToken: event.replyToken,
+    eventId: event.webhookEventId,
     // Workers は I/O が起きるまで時刻を更新しない。リクエストを受けた直後の
     // ここは時計が新しいが、alarm で起きた直後の DO は古いままなので渡す。
     now: Date.now(),
   })
-  trace('turn.scheduled', { key, elapsedMs: Date.now() - startedAt })
+  // 処理済みのイベントの再送なら、生成も返信もせずに捨てている。
+  trace(scheduled ? 'turn.scheduled' : 'turn.duplicate', {
+    key,
+    webhookEventId: event.webhookEventId,
+    elapsedMs: Date.now() - startedAt,
+  })
 }
 
 const app = new Hono<{ Bindings: CloudflareBindings }>()

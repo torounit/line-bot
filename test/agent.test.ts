@@ -28,7 +28,12 @@ const conversation = (agent: DurableObjectStub<LineChatAgent>, calls: CapturedRe
   // calls は複数の会話で共有されることがあるので、作成時点の件数を起点にする。
   let replies = replyTexts(calls).length
   return async (text: string): Promise<string> => {
-    await agent.startTurn({ text, replyToken: `tok-${replies}`, now: Date.now() })
+    await agent.startTurn({
+      text,
+      replyToken: `tok-${replies}`,
+      eventId: crypto.randomUUID(),
+      now: Date.now(),
+    })
     await runDurableObjectAlarm(agent)
     replies += 1
     await vi.waitFor(() => expect(replyTexts(calls)).toHaveLength(replies))
@@ -47,7 +52,7 @@ describe('LineChatAgent#startTurn', () => {
     const agent = await stubModel('user:U1', textModel('返事'))
     const { calls } = stubLineApi()
 
-    await agent.startTurn({ text: 'やあ', replyToken: 'tok', now: Date.now() })
+    await agent.startTurn({ text: 'やあ', replyToken: 'tok', eventId: 'evt-1', now: Date.now() })
 
     expect(calls).toHaveLength(0)
   })
@@ -125,6 +130,71 @@ describe('LineChatAgent#startTurn', () => {
   })
 })
 
+describe('LineChatAgent の再送の扱い', () => {
+  it('同じ eventId の依頼は 2 回目を受け付けない', async () => {
+    const agent = await stubModel('user:U1', textModel('返事'))
+    stubLineApi()
+    const request = { text: 'やあ', replyToken: 'tok', eventId: 'evt-1', now: Date.now() }
+
+    expect(await agent.startTurn(request)).toBe(true)
+    expect(await agent.startTurn(request)).toBe(false)
+  })
+
+  it('再送されたイベントでは生成も返信もしない', async () => {
+    const { target, model } = await stubModelWithCalls('user:U1', '返事')
+    const { calls } = stubLineApi()
+    const request = { text: 'やあ', replyToken: 'tok', eventId: 'evt-1', now: Date.now() }
+
+    await target.startTurn(request)
+    await runDurableObjectAlarm(target)
+    await vi.waitFor(() => expect(replyTexts(calls)).toHaveLength(1))
+    await target.startTurn({ ...request, replyToken: 'tok-redelivered' })
+    // 「何も起きない」は待ち切れないので、後続の正規のターンを流して
+    // 再送ぶんが割り込んでいないことを確かめる（ターンは DO 内で直列に進む）。
+    await target.startTurn({ ...request, replyToken: 'tok-next', eventId: 'evt-2' })
+    await runDurableObjectAlarm(target)
+    await vi.waitFor(() => expect(replyTexts(calls)).toHaveLength(2))
+
+    const replyTokens = calls
+      .filter((c) => c.url === REPLY_URL)
+      .map((c) => (c.body as { replyToken: string }).replyToken)
+    expect(replyTokens).toEqual(['tok', 'tok-next'])
+    expect(model.doStreamCalls).toHaveLength(2)
+    // 再送の発言は履歴に入っていない。
+    expect(model.doStreamCalls[1].prompt.map((m) => m.role)).toEqual([
+      'system',
+      'user',
+      'assistant',
+      'user',
+    ])
+  })
+
+  it('eventId が違えば同じ文面でも別のターンとして扱う', async () => {
+    const agent = await stubModel('user:U1', textModel('返事'))
+    stubLineApi()
+    const now = Date.now()
+
+    expect(await agent.startTurn({ text: 'やあ', replyToken: 'a', eventId: 'evt-1', now })).toBe(
+      true,
+    )
+    expect(await agent.startTurn({ text: 'やあ', replyToken: 'b', eventId: 'evt-2', now })).toBe(
+      true,
+    )
+  })
+
+  // 記録は会話ごとの DO に閉じているので、期限を過ぎたものは消して表を小さく保つ。
+  it('期限を過ぎた記録は消え、同じ eventId を再び受け付ける', async () => {
+    const agent = await stubModel('user:U1', textModel('返事'))
+    stubLineApi()
+    const now = Date.now()
+    const request = { text: 'やあ', replyToken: 'tok', eventId: 'evt-1', now }
+
+    expect(await agent.startTurn(request)).toBe(true)
+    const dayLater = now + 24 * 60 * 60 * 1000 + 1
+    expect(await agent.startTurn({ ...request, now: dayLater })).toBe(true)
+  })
+})
+
 describe('LineChatAgent の会話履歴', () => {
   it('2 ターン目のモデル呼び出しに 1 ターン目の履歴が渡る', async () => {
     const { target, model } = await stubModelWithCalls('user:U1', '一回目', '二回目')
@@ -192,6 +262,7 @@ describe('LineChatAgent の会話履歴', () => {
     await target.startTurn({
       text: 'やあ',
       replyToken: 'tok',
+      eventId: 'evt-1',
       now: Date.parse('2026-07-18T15:00:00Z'),
     })
     await runDurableObjectAlarm(target)
