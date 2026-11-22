@@ -10,7 +10,7 @@ const MODEL_ID = 'claude-sonnet-5-5'
 /** 1 回の応答で web 検索できる回数。 */
 // 検索は 1 回ごとに課金され待ち時間も延びる。検索し直す余地だけ残す。
 const MAX_WEB_SEARCHES = 3
-/** この文言だけを送ると会話履歴を捨てる。 */
+/** この文言だけを送ると会話履歴を捨てる。デバッグ用。 */
 const RESET_COMMAND = 'リセット'
 const RESET_TEXT = '会話履歴をリセットしました。'
 /** 最後の発言からこれだけ空いたら、次の発言の前に会話履歴を捨てる。 */
@@ -119,7 +119,6 @@ export class LineChatAgent extends AIChatAgent<CloudflareBindings, ChatState> {
       maxRetries: 1,
       providerOptions: {
         anthropic: {
-          // Sonnet 5.5 は thinking を無効にできないので、effort で浅くする（既定は high）。
           effort: 'low',
           // 安全分類器に断られたら別のモデルで答えさせる。断られたままだと本文が空になる。
           fallbacks: 'default',
@@ -174,7 +173,6 @@ export class LineChatAgent extends AIChatAgent<CloudflareBindings, ChatState> {
     const { lastTurnAt } = this.state
     this.setState({ lastTurnAt: request.now })
 
-    // 壊れた応答が履歴に残るとモデルがそれを踏襲するので、手動で断ち切れるようにする。
     if (request.text.trim() === RESET_COMMAND) {
       await this.#reset()
       trace('reset.done', {})
