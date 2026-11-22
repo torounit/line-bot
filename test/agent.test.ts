@@ -20,10 +20,8 @@ const replyTexts = (calls: CapturedRequest[]): string[] =>
     .map((c) => (c.body as { messages: { text: string }[] }).messages[0].text)
 
 /**
- * 1 ターンを走らせて返信本文を返す。
- * 生成と返信は alarm の中で行われるので、依頼 → 発火 → 返信の到着まで待つ。
- * schedule(0) はほぼ即時なので miniflare が自発的に発火する場合もあり、
- * 発火経路は問わず返信が増えたことだけを見る。
+ * 会話を 1 つ始め、発言を渡すと 1 ターン走らせて返信本文を返す関数を返す。
+ * ターンの依頼 → alarm の発火 → 返信の到着まで待つ。
  */
 const conversation = (agent: DurableObjectStub<LineChatAgent>, calls: CapturedRequest[]) => {
   // calls は複数の会話で共有されることがあるので、作成時点の件数を起点にする。
@@ -37,6 +35,8 @@ const conversation = (agent: DurableObjectStub<LineChatAgent>, calls: CapturedRe
     })
     await runDurableObjectAlarm(agent)
     replies += 1
+    // schedule(0) はほぼ即時なので miniflare が自発的に発火する場合もある。
+    // 発火経路は問わず、返信が増えたことだけを見る。
     await vi.waitFor(() => expect(replyTexts(calls)).toHaveLength(replies))
     return replyTexts(calls)[replies - 1]
   }

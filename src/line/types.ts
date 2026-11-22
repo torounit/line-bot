@@ -5,13 +5,14 @@ export type ReplyableTextMessageEvent = webhook.MessageEvent & {
   message: webhook.TextMessageContent
 }
 
+/** replyToken を持つテキストメッセージのイベントか。 */
 // MessageEvent.replyToken は optional なので、返信できることを型で保証してからハンドラに渡す。
 export const isReplyableTextMessage = (event: webhook.Event): event is ReplyableTextMessageEvent =>
   event.type === 'message' && event.message.type === 'text' && typeof event.replyToken === 'string'
 
 /**
- * 会話履歴を分ける単位。グループ・ルームは参加者全員で 1 つの会話として扱う。
- * source も userId も optional なので、導出できなければ null を返す（キーを捏造しない）。
+ * 会話履歴を分けるキー。グループ・ルームは参加者全員で 1 つの会話として扱う。
+ * @returns source から導出できなければ null（source も userId も optional なので）
  */
 export const conversationKey = (source: webhook.Source | undefined): string | null => {
   switch (source?.type) {
@@ -26,6 +27,9 @@ export const conversationKey = (source: webhook.Source | undefined): string | nu
   }
 }
 
-// ローディングアニメーションは 1 対 1 チャットでのみ動作するため、user のときだけ対象になる。
+/**
+ * ローディングアニメーションを出す先の chatId。
+ * @returns 1 対 1 チャットでなければ null（ローディングは 1 対 1 でしか動かない）
+ */
 export const loadingChatId = (source: webhook.Source | undefined): string | null =>
   source?.type === 'user' && source.userId != null ? source.userId : null

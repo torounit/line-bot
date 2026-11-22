@@ -15,10 +15,7 @@ import { trace } from './trace'
 // Durable Object クラスは Worker のエントリからも named export する必要がある。
 export { LineChatAgent } from './agent'
 
-/**
- * 生成と返信は DO 側の alarm で行うので、ここではローディング表示と依頼だけを行う。
- * Worker の waitUntil はレスポンス送信後 30 秒で打ち切られ、生成には収まらない。
- */
+/** ローディングを出し、Agent にターンを依頼する。生成と返信は Agent 側で行う。 */
 async function handleEvent(
   env: CloudflareBindings,
   client: messagingApi.MessagingApiClient,
@@ -45,11 +42,12 @@ async function handleEvent(
     text: event.message.text,
     replyToken: event.replyToken,
     eventId: event.webhookEventId,
-    // Workers は I/O が起きるまで時刻を更新しない。リクエストを受けた直後の
-    // ここは時計が新しいが、alarm で起きた直後の DO は古いままなので渡す。
+    // Workers のランタイムは Spectre 対策で I/O が起きるまで時刻を更新しない。
+    // alarm で起きた直後の DO には外向きの I/O がまだ無く、new Date() が
+    // 前回のターンで最後に I/O した時刻を返し続ける。リクエストを受けた直後の
+    // ここは時計が新しいので、この時刻を渡す。
     now: Date.now(),
   })
-  // 処理済みのイベントの再送なら、生成も返信もせずに捨てている。
   trace(scheduled ? 'turn.scheduled' : 'turn.duplicate', {
     key,
     webhookEventId: event.webhookEventId,

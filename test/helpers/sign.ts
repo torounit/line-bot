@@ -15,7 +15,7 @@ async function getSigningKey(): Promise<CryptoKey> {
   return signingKey
 }
 
-// LINE と同じ方式（channelSecret での HMAC-SHA256 を base64 化）でリクエストを組み立てる。
+/** LINE と同じ方式（channelSecret での HMAC-SHA256 を base64 化）で署名したリクエストを作る。 */
 export async function signedRequest(payload: unknown): Promise<RequestInit> {
   const body = JSON.stringify(payload)
   const mac = await crypto.subtle.sign(
