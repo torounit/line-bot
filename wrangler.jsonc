@@ -12,13 +12,7 @@
   // 型生成はここから行う（.env からの推測を置き換える）。
   // CF_AIG_TOKEN は AI Gateway を呼ぶための Cloudflare API トークン（AI Gateway Run 権限）。
   "secrets": {
-    "required": [
-      "LINE_CHANNEL_ACCESS_TOKEN",
-      "LINE_CHANNEL_SECRET",
-      "CF_ACCESS_CLIENT_ID",
-      "CF_ACCESS_CLIENT_SECRET",
-      "CF_AIG_TOKEN"
-    ]
+    "required": ["LINE_CHANNEL_ACCESS_TOKEN", "LINE_CHANNEL_SECRET", "CF_AIG_TOKEN"]
   },
   // Agents SDK は Durable Object 必須。this.sql を使うため new_sqlite_classes で登録する。
   "durable_objects": {
@@ -48,13 +42,7 @@
     "test": {
       // secrets は環境間で継承されない。書かないと型生成で全部 optional になる。
       "secrets": {
-        "required": [
-          "LINE_CHANNEL_ACCESS_TOKEN",
-          "LINE_CHANNEL_SECRET",
-          "CF_ACCESS_CLIENT_ID",
-          "CF_ACCESS_CLIENT_SECRET",
-          "CF_AIG_TOKEN"
-        ]
+        "required": ["LINE_CHANNEL_ACCESS_TOKEN", "LINE_CHANNEL_SECRET", "CF_AIG_TOKEN"]
       },
       "durable_objects": {
         "bindings": [

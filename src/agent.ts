@@ -1,25 +1,19 @@
-import { createAnthropic } from '@ai-sdk/anthropic'
+import { anthropic, createAnthropic } from '@ai-sdk/anthropic'
 import { AIChatAgent, type OnChatMessageOptions } from '@cloudflare/ai-chat'
-import {
-  convertToModelMessages,
-  type LanguageModel,
-  pruneMessages,
-  stepCountIs,
-  streamText,
-  tool,
-} from 'ai'
-import { z } from 'zod'
+import { convertToModelMessages, type LanguageModel, pruneMessages, streamText } from 'ai'
 import { abortAfter } from './abort'
 import { systemPrompt } from './ai/prompt'
 import { createMessagingClient, replyText } from './line/client'
-import { searxngSearch } from './tools/web-search'
 import { trace } from './trace'
 
 // Workers AI のモデル（gemma-4・glm-4.7-flash・llama-4-scout・qwen3.8）は
 // 数字の脱落、ツールを呼べない、Markdown を混ぜる指示違反などで品質が足りなかった。
 const MODEL_ID = 'claude-sonnet-5-5'
-// 自前ホストの SearXNG。Cloudflare Access で保護されており Service Token で通す。
-const SEARXNG_URL = 'https://searxng.torounit.foo'
+/**
+ * 1 回の応答で web 検索できる回数。検索は 1 回ごとに課金され、待ち時間も延びる。
+ * 言い換えて検索し直す程度の余地は残す。
+ */
+const MAX_WEB_SEARCHES = 3
 // LINE のテキストメッセージ上限。
 const MAX_TEXT_LENGTH = 5000
 // この文言だけを送ると会話履歴を捨てる。壊れた応答が履歴に残るとモデルが
@@ -136,25 +130,15 @@ export class LineChatAgent extends AIChatAgent<CloudflareBindings, ChatState> {
 
   /**
    * モデルが呼べるツール。最新情報を要する質問のときに web 検索させる。
-   * execute を持つサーバ実行ツールなので、tool 呼び出し → 検索 → 最終応答まで
-   * onChatMessage の 1 ストリーム内で完結する（クライアントの往復は不要）。
+   * Anthropic のサーバツールなので、検索は API の中で行われ、検索 → 最終応答まで
+   * 1 回のモデル呼び出しで完結する（こちらで execute する必要は無い）。
    */
   #tools() {
     return {
-      webSearch: tool({
-        description:
-          '最新のニュースや出来事、学習データに含まれない可能性のある情報を web で検索する。',
-        inputSchema: z.object({ query: z.string().describe('検索クエリ。日本語でよい。') }),
-        execute: async ({ query }, { abortSignal }) =>
-          searxngSearch(
-            {
-              baseUrl: SEARXNG_URL,
-              accessClientId: this.env.CF_ACCESS_CLIENT_ID,
-              accessClientSecret: this.env.CF_ACCESS_CLIENT_SECRET,
-            },
-            query,
-            abortSignal,
-          ),
+      web_search: anthropic.tools.webSearch_20260209({
+        maxUses: MAX_WEB_SEARCHES,
+        // 日本の利用者向けに、地域に関わる検索結果を寄せる。
+        userLocation: { type: 'approximate', country: 'JP', timezone: 'Asia/Tokyo' },
       }),
     }
   }
@@ -174,14 +158,11 @@ export class LineChatAgent extends AIChatAgent<CloudflareBindings, ChatState> {
         // system プロンプトとそれより前の履歴に紐づいており、毎ターン変わる現在時刻入りの
         // system プロンプトや下の toolCalls の刈り込み、maxPersistedMessages による
         // 先頭の切り捨てで履歴が変わると、送り返した時点で 400 になりうる。
-        // すべての thinking を落とすのは許されている。同じターン内のツールループでは
-        // AI SDK が直前の thinking をそのまま送るので、ここでの刈り込みは影響しない。
+        // すべての thinking を落とすのは許されている。
         reasoning: 'all',
         toolCalls: 'before-last-2-messages',
       }),
       tools: this.#tools(),
-      // ツール呼び出し → 検索 → 最終応答で複数ステップ回るので上限を持たせる。
-      stopWhen: stepCountIs(5),
       abortSignal: abortAfter(GENERATION_TIMEOUT_MS, options?.abortSignal),
       maxOutputTokens: MAX_OUTPUT_TOKENS,
       maxRetries: 1,

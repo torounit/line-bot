@@ -8,7 +8,6 @@ import {
   stubModel,
   stubModelWithCalls,
   textModel,
-  toolCallModel,
 } from './helpers/agent-stub'
 import { type CapturedRequest, stubLineApi } from './helpers/fetch-stub'
 
@@ -116,19 +115,15 @@ describe('LineChatAgent#startTurn', () => {
     expect(reply).not.toContain('�')
   })
 
-  it('web 検索ツールを呼ぶと SearXNG を叩いてから返答する', async () => {
-    const agent = await stubModel(
-      'user:U1',
-      toolCallModel('webSearch', { query: '最新ニュース' }, '最新情報はこうです'),
-    )
+  it('モデルに Anthropic の web 検索ツールを渡す', async () => {
+    const { target, model } = await stubModelWithCalls('user:U1', 'はい')
     const { calls } = stubLineApi()
 
-    const reply = await conversation(agent, calls)('最新のニュースは？')
+    await conversation(target, calls)('最新のニュースは？')
 
-    // execute が走って SearXNG を叩いた証跡（stubLineApi は全 fetch を記録する）。
-    expect(calls.some((c) => c.url.startsWith('https://searxng.torounit.foo'))).toBe(true)
-    // ツール結果を受けた 2 回目のパスの本文が返信される。
-    expect(reply).toBe('最新情報はこうです')
+    expect(model.doStreamCalls[0].tools).toEqual([
+      expect.objectContaining({ type: 'provider', id: 'anthropic.web_search_20260209' }),
+    ])
   })
 })
 
